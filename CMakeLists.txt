@@ -50,7 +50,11 @@ endif()
 include(pico_sdk_import.cmake)
 # include(example_auto_set_url.cmake)
 
-project(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling C CXX ASM)
+project(Pico2_UAC12_USBDDC_11FFT_NoOverSampling C CXX ASM)
+
+# --- 現在のビルド日時を文字列として生成 ---
+# YYYY/MM/DD HH:MM の形式で取得
+string(TIMESTAMP BUILD_TIMESTAMP "%Y/%m/%d %H:%M")
 
 # Use bundled pico‑extras from the repository
 # add_subdirectory(pico-extras)
@@ -65,7 +69,7 @@ add_subdirectory(src)
 
 # Compile Definitions
 # (pico-extras usb_device / LUFA 用の PICO_USBDEV_* 定義は TinyUSB 移行により不要)
-target_compile_definitions(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling PRIVATE
+target_compile_definitions(Pico2_UAC12_USBDDC_11FFT_NoOverSampling PRIVATE
     AUDIO_FREQ_MAX=192000
 
     # USB bring-up level: 0 = USB off (original boot flow only) / 1 = TinyUSB enumeration only / 2 = full
@@ -73,5 +77,8 @@ target_compile_definitions(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling PRIVA
 
     # Core0/Core1 stack 2KB -> 4KB (TFT drawing alone needs ~1.4KB; USB/timer ISRs nest on top of it)
     PICO_STACK_SIZE=0x1000
-    PICO_CORE1_STACK_SIZE=0x1000
-)
+
+# ビルドタイムスタンプの定義
+    BUILD_TIMESTAMP="${BUILD_TIMESTAMP}"
+
+    )

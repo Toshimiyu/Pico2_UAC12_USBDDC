@@ -40,4 +40,21 @@ extern void set_pwm_isr_1(float period_us);
 extern DMA_TX_STRUCTURE dma_tx;
 extern volatile bool enable_output;
 
+// ---- Ver1.2 diagnostics (written by Core1 in dma_tx_start(), read by Core0) ----
+typedef struct
+{
+    volatile bool armed;                 // Core0 sets it while STREAMING: MIN/MAX are only collected then
+    volatile int32_t level_min;          // Ring level [frames] right after a fetch (local minimum)
+    volatile int32_t level_max;          // Ring level [frames] right before a fetch (local maximum)
+    volatile uint32_t fetch_count;       // blocks moved from the Ring to the DMA pool
+    volatile uint32_t output_stop_count; // underruns: enable_output true -> false while armed (STREAMING)
+    volatile uint32_t loop_prev_us;      // Core1 private: time of the previous dma_tx_start() call
+    volatile uint32_t loop_max_us;       // longest gap between two dma_tx_start() calls while armed
+    volatile uint32_t loop_over_count;   // gaps longer than LOOP1_WARN_US while armed
+    volatile uint32_t tail_block_count;  // a lone last block waited with an empty Ring (see DMA_START_TAIL_BLOCK)
+} DMA_DIAG;
+extern DMA_DIAG dma_diag;
+extern void dma_diag_reset(void);        // restart MIN/MAX collection (Core0)
+extern uint32_t dma_tx_pool_frames(void); // frames queued in the DMA pool (upper bound, includes the block being played)
+
 #endif /* _TRANSMIT_TO_DAC_H_ */

@@ -32,6 +32,35 @@ DMA_TX_STRUCTURE dma_tx;
 
 volatile bool enable_output = false;
 
+// Ver1.2 diagnostics -------------------------------------------------------------------------
+DMA_DIAG dma_diag = {.armed = false, .level_min = INT32_MAX, .level_max = 0, .fetch_count = 0, .output_stop_count = 0,
+                     .loop_prev_us = 0, .loop_max_us = 0, .loop_over_count = 0, .tail_block_count = 0};
+
+void dma_diag_reset(void)
+{
+    dma_diag.level_min = INT32_MAX;
+    dma_diag.level_max = 0;
+    dma_diag.loop_max_us = 0;
+    dma_diag.loop_over_count = 0;
+}
+
+// Blocks in use are the last dma_tx.using blocks written (oldest first). The oldest one may be partly
+// played already, so this is an upper bound. Read from Core0 without locking: approximate by design.
+uint32_t dma_tx_pool_frames(void)
+{
+    uint32_t n = dma_tx.using;
+    if (n > DEPTH_DMA_TX_BUFFER)
+        n = DEPTH_DMA_TX_BUFFER;
+    uint32_t idx = (dma_tx.wp + DEPTH_DMA_TX_BUFFER - n) % DEPTH_DMA_TX_BUFFER;
+    uint32_t frames = 0;
+    for (uint32_t i = 0; i < n; i++)
+    {
+        frames += dma_tx.data[idx].tx_size / 2u;
+        idx = (idx + 1u) % DEPTH_DMA_TX_BUFFER;
+    }
+    return frames;
+}
+
 // PWM
 static uint16_t pwm_slice;
 
@@ -39,6 +68,7 @@ void __not_in_flash_func(dma_tx_start)(void);
 static inline uint32_t dma_tx_active_count(void);
 static inline bool dma_tx_any_running(void);
 static void __not_in_flash_func(dma_tx_chain_service)(void);
+static bool dma_tail_seen = false; // lone-block episode already counted
 
 bool calc_pwm_clkdiv_and_wrap_us(float target_period_us, uint16_t *wrap_out, float *clkdiv_out);
 void set_pwm_isr_1(float period_us);
@@ -131,11 +161,37 @@ static void __not_in_flash_func(dma_tx_chain_service)(void)
                     start_idx = i;
             }
         }
-        if ((armed_count >= 2) && start_idx >= 0)
+        bool start = (armed_count >= 2) && (start_idx >= 0);
+
+        // Lone last block: one block is queued, nothing runs, and the Ring is empty, so no second block
+        // is coming. Waiting for a second one would leave these frames unplayed (end of a stream, or the
+        // end of the drain before a sample-rate change).
+        const bool tail = (armed_count == 1) && (start_idx >= 0) && (get_size_using(&buffer_audio) == 0);
+        if (tail)
+        {
+            if (!dma_tail_seen)
+            {
+                dma_tail_seen = true;
+                dma_diag.tail_block_count++;
+            }
+#if DMA_START_TAIL_BLOCK
+            start = true;
+#endif
+        }
+        else
+        {
+            dma_tail_seen = false;
+        }
+
+        if (start)
         {
             dma_channel_start(dma_ch[start_idx]);
             dma_ch_state[start_idx] = DMA_CH_STATE_RUNNING;
         }
+    }
+    else
+    {
+        dma_tail_seen = false;
     }
 }
 
@@ -212,11 +268,28 @@ extern volatile absolute_time_t time_start_output;
 
 void __not_in_flash_func(dma_tx_start)(void)
 {
+    // Loop-interval diagnostics: gap between two calls (this loop also runs the FFT)
+    const uint32_t loop_now_us = time_us_32();
+    if (dma_diag.armed && dma_diag.loop_prev_us != 0)
+    {
+        const uint32_t gap_us = loop_now_us - dma_diag.loop_prev_us;
+        if (gap_us > dma_diag.loop_max_us)
+            dma_diag.loop_max_us = gap_us;
+        if (gap_us > LOOP1_WARN_US)
+            dma_diag.loop_over_count++;
+    }
+    dma_diag.loop_prev_us = loop_now_us;
+
     int32_t level = (int32_t)get_size_using(&buffer_audio) / 2;
     if (level >= SIZE_BUFFER_FB_THRESHOLD)
         enable_output = true;
     else if (level == 0 && dma_tx.using == 0)
+    {
+        if (enable_output && dma_diag.armed) // dry while STREAMING = underrun (planned stops are not counted)
+            dma_diag.output_stop_count++;
         enable_output = false;
+    }
+
 
     if (enable_output && !enable_output_prev)
     {
@@ -239,6 +312,7 @@ void __not_in_flash_func(dma_tx_start)(void)
         int32_t frames = (int32_t)get_size_using(&buffer_audio) / 2;
         if (frames <= 0)
             break;
+        const int32_t level_before = frames; // Ring level just before this fetch
         if (frames > DMA_MAX_FRAMES)
             frames = DMA_MAX_FRAMES;
 
@@ -246,6 +320,16 @@ void __not_in_flash_func(dma_tx_start)(void)
         uint32_t *tx = dma_tx.data[wp].tx_buf;
         if (ringbuf_read_array_spinlock((int32_t *)tx, (uint32_t)frames * 2u, &buffer_audio) < 0)
             break;
+
+        dma_diag.fetch_count++;
+        if (dma_diag.armed)
+        {
+            const int32_t level_after = (int32_t)get_size_using(&buffer_audio) / 2;
+            if (level_before > dma_diag.level_max)
+                dma_diag.level_max = level_before;
+            if (level_after < dma_diag.level_min)
+                dma_diag.level_min = level_after;
+        }
 
         const uint32_t irq_state = save_and_disable_interrupts();
         dma_tx.data[wp].tx_size = (uint32_t)frames * 2u;

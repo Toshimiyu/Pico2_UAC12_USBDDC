@@ -23,7 +23,7 @@
 
 // String Desc.
 #define MFG_NAME ("Toshimiyu")
-#define DEVICE_NAME ("Pico2 UAC2 USB DDC")
+#define DEVICE_NAME ("Pico2 UAC12 USB DDC")
 #define WEBSITE_ADDR ("toshimi.yuze@gmail.com:")
 
 // Faster I2S slew rate
@@ -31,12 +31,6 @@
 
 // Enhancement I2S signal output current
 #define I2S_STRENGTH_REINFORCE_ENABLE (false)
-
-// Power Mode Switch Pin
-// Power mode switch retained for clock and voltage selection
-#define POWER_MODE_SWITCH_PIN (0)
-#define ALWAYS_HIGH_POWER (true)
-#define ALWAYS_LOW_POWER (false)
 
 // I2S Pin : sideset0:BCLK, sideset1:LRCK (if No Changed)
 #define I2S_SIDESET_CHANGE (false)
@@ -51,6 +45,36 @@
 #define EXT_POWER_ENABLE_PIN (3)
 #define BOOT_WAIT_TIME_US (50000)
 
+// Pico Display Pack 2.0 wiring shared by the playback and diagnostics screens.
+#ifndef LCD_SCK_PIN
+#define LCD_SCK_PIN (18)
+#endif
+#ifndef LCD_MOSI_PIN
+#define LCD_MOSI_PIN (19)
+#endif
+#ifndef LCD_CS_PIN
+#define LCD_CS_PIN (17)
+#endif
+#ifndef LCD_DC_PIN
+#define LCD_DC_PIN (16)
+#endif
+#ifndef LCD_BL_PIN
+#define LCD_BL_PIN (20)
+#endif
+#ifndef DISPLAY_BUTTON_A_PIN
+#define DISPLAY_BUTTON_A_PIN (12)
+#endif
+#ifndef DISPLAY_BUTTON_B_PIN
+#define DISPLAY_BUTTON_B_PIN (13)
+#endif
+#ifndef DISPLAY_BUTTON_X_PIN
+#define DISPLAY_BUTTON_X_PIN (14)
+#endif
+#ifndef DISPLAY_BUTTON_Y_PIN
+#define DISPLAY_BUTTON_Y_PIN (15)
+#endif
+#define DISPLAY_BUTTON_DEBOUNCE_US (30000u)
+
 // User Configurable end ------------------------------------------------------------
 
 // システムクロック
@@ -58,15 +82,9 @@
 // #define SYS_CLOCK_KHZ_48K (430000)
 #define SYS_CLOCK_KHZ_44K (336000)
 #define SYS_CLOCK_KHZ_48K (360000)
-#define SYS_CLOCK_KHZ_LP_44K (208000)
-#define SYS_CLOCK_KHZ_LP_48K (208000)
-// 208M8/48k/64 = 67.968->68, 208M8/44k1/64 = 73.979->74
 
 // Core Voltage
-// #define V_CORE_HI VREG_VOLTAGE_1_50
-// #define V_CORE_HI VREG_VOLTAGE_1_30
 #define V_CORE_HI VREG_VOLTAGE_1_25
-#define V_CORE_LO VREG_VOLTAGE_1_05
 
 
 // 初期オーディオサンプル周波数
@@ -87,14 +105,28 @@
 // エンドポイントバッファサイズ((96+1)kHz*1ms=97以上あればよい)
 #define SIZE_EP_BUFFER (896)
 
-// Audio ring capacity in stereo frames.
-#define SIZE_AUDIO_RING_FRAMES (1024)
+// Audio ring capacity in stereo frames. Doubled from 1024 to 2048 to test additional
+// headroom during 192 kHz playback; the feedback target follows at 50% capacity.
+#define SIZE_AUDIO_RING_FRAMES (1536)
 
 // DMA転送バッファサイズ 3以上あればよい
 #define DEPTH_DMA_TX_BUFFER (4)
 
+// Ver1.2: start the DMA with a single queued block when nothing else is coming (Ring empty).
+// Before, output only started with >= 2 armed blocks, so the lone last block of a stream (or of a drain)
+// was never played. 0 = old behaviour (dma_diag.tail_block_count still counts the situation).
+#define DMA_START_TAIL_BLOCK (1)
+
+// Diagnostics: a main-loop pass longer than this counts as 'over' (loop0/loop1_over_count) [us]
+#define LOOP0_WARN_US (1000)
+#define LOOP1_WARN_US (1000)
+
 // FB水位(50%が望ましい)
 #define SIZE_BUFFER_FB_THRESHOLD (SIZE_AUDIO_RING_FRAMES / 2)
+
+// LCD drawing (blocking SPI on Core0) is only allowed while the ring holds at least this many frames.
+// Defined once here: display services are allowed when at least half the feedback target remains buffered.
+#define DISPLAY_MIN_AUDIO_HEADROOM_SAMPLES (SIZE_BUFFER_FB_THRESHOLD / 2)
 
 // Feedback(±1サンプルになる値を返す 基準は1000)
 #define FB_ADJ_LIMIT (1000)
@@ -104,6 +136,31 @@
 #define MIN_VOLUME (-64 * VOLUME_RESOLUTION)
 #define MAX_VOLUME (0 * VOLUME_RESOLUTION)
 #define DEFAULT_VOLUME (0 * VOLUME_RESOLUTION)
+
+typedef struct
+{
+	bool raw_high;
+	bool stable_high;
+	uint32_t raw_changed_us;
+} display_button_t;
+
+static inline bool display_button_pressed(display_button_t *button, uint pin, uint32_t now)
+{
+	const bool raw_high = gpio_get(pin);
+	if (raw_high != button->raw_high)
+	{
+		button->raw_high = raw_high;
+		button->raw_changed_us = now;
+	}
+
+	if (button->stable_high != button->raw_high &&
+		(uint32_t)(now - button->raw_changed_us) >= DISPLAY_BUTTON_DEBOUNCE_US)
+	{
+		button->stable_high = button->raw_high;
+		return !button->stable_high;
+	}
+	return false;
+}
 
 typedef struct
 {
@@ -120,7 +177,6 @@ typedef struct
 extern RINGBUFFER buffer_audio;
 
 extern AUDIO_STATE audio_state;
-extern volatile bool is_high_power_mode;
 extern uint32_t now_playing;
 extern uint16_t length_remain_to_I2S_FIFO;
 static inline uint32_t audio_ring_total_frames(void)
@@ -131,7 +187,7 @@ static inline uint32_t audio_ring_total_frames(void)
 extern uint32_t calc_pwm_period_us(float period_us, uint16_t prescale);
 extern void volume_control(void);
 
-extern void renew_clock(bool is_high_power);
+extern void renew_clock(void);
 extern void cancel_timer0(void);
 extern void restart_timer0(void);
 

@@ -22,19 +22,15 @@
 #include "usb_device_control.h"
 #include "transmit_to_dac.h"
 #include "ringbuffer.h"
-#include "debug_with_gpio.h"
 #include "display_rta.h"
 #include "spectrum.h"
 #include "debug_gauge.h"
-
-// パワー管理
-volatile bool is_high_power_mode = true;
 
 // 処理タイミング制御用
 #define MILLISEC50 (500000 / TIMER0_US)
 
 // タイマー割り込み
-struct repeating_timer timer0; // Periodic power-mode and stream housekeeping
+struct repeating_timer timer0; // Periodic stream housekeeping
 
 // ring buffer
 RINGBUFFER buffer_audio;
@@ -49,6 +45,7 @@ static bool is_cleared_buffer = false;
 volatile absolute_time_t time_start_output;
 
 bool __not_in_flash_func(core0_timer_callback)(struct repeating_timer *t);
+static void display_service(void);
 
 // TinyUSB must be polled during startup animation; keep servicing USB while waiting.
 static void boot_wait_ms(uint32_t ms)
@@ -57,6 +54,7 @@ static void boot_wait_ms(uint32_t ms)
 	while (!time_reached(end))
 	{
 		usb_audio_task();
+		display_service();
 		sleep_us(1);
 	}
 }
@@ -74,6 +72,39 @@ extern void core1_main();
 // ミュート解除タイミング確認用
 extern volatile bool enable_output;
 
+static void display_service(void)
+{
+	display_rta_process_buttons();
+	if (display_rta_page_service())
+	{
+		const display_page_t page = display_rta_get_page();
+		if (page == DISPLAY_PAGE_DIAGNOSTICS)
+		{
+			debug_gauge_init();
+		}
+		else if (page == DISPLAY_PAGE_PLAYBACK)
+		{
+			display_rta_set_format(audio_state.bit_depth, (float)audio_state.freq / 1000.0f);
+		}
+	}
+
+	if (!display_rta_page_ready())
+	{
+		return;
+	}
+
+	const display_page_t page = display_rta_get_page();
+
+	if (page == DISPLAY_PAGE_PLAYBACK)
+	{
+		display_rta_render_service();
+	}
+	else if (page == DISPLAY_PAGE_DIAGNOSTICS)
+	{
+		debug_gauge_service();
+	}
+}
+
 void cancel_timer0(void)
 {
 	cancel_repeating_timer(&timer0);
@@ -84,7 +115,7 @@ void restart_timer0(void)
 	add_repeating_timer_us(-TIMER0_US, core0_timer_callback, NULL, &timer0);
 }
 
-// Periodic power-mode and stream housekeeping
+// Periodic playback housekeeping
 bool __not_in_flash_func(core0_timer_callback)(struct repeating_timer *t)
 {
 	// volatile static uint32_t now_playing_old = 0;
@@ -92,36 +123,11 @@ bool __not_in_flash_func(core0_timer_callback)(struct repeating_timer *t)
 	count++;
 	if (count >= MILLISEC50)
 	{
-		// パワーモード切り替え
-		if ((gpio_get(POWER_MODE_SWITCH_PIN) || ALWAYS_HIGH_POWER) && (!ALWAYS_LOW_POWER))
-		{
-			// HiPowerMode
-			if (!is_high_power_mode)
-			{
-				is_high_power_mode = true;
-				clear_ringbuffer(&buffer_audio);
-				renew_clock(is_high_power_mode);
-			}
-		}
-		else
-		{
-			// LoPowerMode
-			if (is_high_power_mode)
-			{
-				is_high_power_mode = false;
-				clear_ringbuffer(&buffer_audio);
-				renew_clock(is_high_power_mode);
-			}
-		}
-
-		gpio_put(ONBOARD_LED_PIN, is_high_power_mode);
-
-
 		// Clear queued PCM after playback has stopped
 		if ((now_playing == now_playing_old) && (!is_cleared_buffer))
 		{
 			clear_ringbuffer(&buffer_audio);
-			renew_clock(is_high_power_mode);
+			renew_clock();
 			now_playing = 0;
 			is_cleared_buffer = true;
 		}
@@ -183,11 +189,6 @@ int main(void)
 	
 	display_rta_draw_splash_screen();
 
-	// パワーモード切り替え用
-	gpio_init(POWER_MODE_SWITCH_PIN);
-	gpio_set_dir(POWER_MODE_SWITCH_PIN, GPIO_IN);
-	gpio_pull_down(POWER_MODE_SWITCH_PIN);
-
 	// オンボードLED点灯用
 	gpio_init(ONBOARD_LED_PIN);
 	gpio_set_dir(ONBOARD_LED_PIN, GPIO_OUT);
@@ -198,7 +199,7 @@ int main(void)
 	gpio_set_dir(DCDC_MODE_PIN, true);
 	gpio_put(DCDC_MODE_PIN, true);
 
-	// Periodic power-mode and playback housekeeping.
+	// Periodic playback housekeeping.
 	add_repeating_timer_us(-TIMER0_US, core0_timer_callback, NULL, &timer0);
 
 	// Core1を起動する Core1ではI2S出力処理をしている
@@ -233,9 +234,8 @@ int main(void)
 	display_rta_set_boot_stage(5);
 	boot_wait_ms(1000);
 
-	// FFT表示画面へ切り替え
-	display_rta_init();
-	debug_gauge_init(); // FFT画面の水位ゲージ（DEBUG_GAUGE_ENABLE=0で無効）
+	// 起動後は再生画面を初期表示し、X/Yから起動画面・診断画面へ切り替える。
+	display_rta_set_page(DISPLAY_PAGE_PLAYBACK);
 
 	// watchdog_enable(50, 1);
 
@@ -276,8 +276,7 @@ int main(void)
 	        inactivity_screen_reset = true;
 	    }
 
-	    // TFT SPI drawing runs on Core0 in short steps and only with audio headroom.
-	    display_rta_render_service();
-	    debug_gauge_service();
+	    // Only the active page is drawn; diagnostics no longer overlays the playback screen.
+	    display_service();
 	}
 }

@@ -11,58 +11,38 @@
 #include "hardware/clocks.h"
 #include "transmit_to_dac.h"
 
-void renew_cpu_clock(bool is_high_power)
+static void renew_cpu_clock(void)
 {
-	// CPUクロックを再設定
+	// CPU clock is kept at the high-performance voltage for the selected rate family.
 	switch (audio_state.freq)
 	{
 	case 192000:
 	case 96000:
 	case 48000:
-		if (is_high_power)
-		{
-			vreg_set_voltage(V_CORE_HI);
-			busy_wait_us(100);
-			set_sys_clock_khz(SYS_CLOCK_KHZ_48K, true);
-			busy_wait_us(50);
-		}
-		else
-		{
-			set_sys_clock_khz(SYS_CLOCK_KHZ_LP_48K, true);
-			busy_wait_us(100);
-			vreg_set_voltage(V_CORE_LO);
-			busy_wait_us(50);
-		}
+		vreg_set_voltage(V_CORE_HI);
+		busy_wait_us(100);
+		set_sys_clock_khz(SYS_CLOCK_KHZ_48K, true);
+		busy_wait_us(50);
 		break;
 	case 176400:
 	case 88200:
 	case 44100:
 	default:
-		if (is_high_power)
-		{
-			vreg_set_voltage(V_CORE_HI);
-			busy_wait_us(100);
-			set_sys_clock_khz(SYS_CLOCK_KHZ_44K, true);
-			busy_wait_us(50);
-		}
-		else
-		{
-			set_sys_clock_khz(SYS_CLOCK_KHZ_LP_44K, true);
-			busy_wait_us(100);
-			vreg_set_voltage(V_CORE_LO);
-			busy_wait_us(50);
-		}
+		vreg_set_voltage(V_CORE_HI);
+		busy_wait_us(100);
+		set_sys_clock_khz(SYS_CLOCK_KHZ_44K, true);
+		busy_wait_us(50);
 		break;
 	}
 }
 
-void renew_clock(bool is_high_power)
+void renew_clock(void)
 {
 	// Core0の割り込みタイマを停止
 	cancel_timer0();
 
 	// CPUクロックを再設定
-	renew_cpu_clock(is_high_power);
+	renew_cpu_clock();
 
 	// Core0の割り込みタイマを再開
 	restart_timer0();

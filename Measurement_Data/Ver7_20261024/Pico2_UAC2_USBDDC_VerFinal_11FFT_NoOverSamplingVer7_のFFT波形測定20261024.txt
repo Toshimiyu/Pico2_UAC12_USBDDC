@@ -1,4 +1,4 @@
-Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSamplingVer7_のFFT波形測定20261024
+Pico2_UAC12_USBDDC_11FFT_NoOverSamplingVer7_のFFT波形測定20261024
 
 変更履歴　
 Ver1.
@@ -29,7 +29,7 @@ Pico2_BitPerfect_USBDDC_VerFinal_11FFT_NoOverSampling
 LUFAベース
 
 Ver7.
-Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling
+Pico2_UAC12_USBDDC_11FFT_NoOverSampling
 #define DEFAULT_GAIN_RATIO (0.80) 設定変更
 オーバーサンプリングコード削除
 FIRコード削除

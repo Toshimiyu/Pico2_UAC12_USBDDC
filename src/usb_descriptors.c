@@ -7,16 +7,11 @@
  */
 
 #include "tusb.h"
-#include "uac2_compat.h"
 #include "pico/unique_id.h"
+#include "usb_audio_config.h"
 #include "usb_descriptors.h"
 #include "common_types.h"
-#include "common.h" // MFG_NAME / DEVICE_NAME
-
-// Same VID as the previous firmware. The PID is intentionally NEW: the device class changed
-// from UAC1 (LUFA style) to UAC2, so Windows must not reuse the cached UAC1 driver binding.
-#define USB_VID           0x2e8a
-#define USB_PID           0xfede
+#include "common.h" // MFG_NAME
 
 //--------------------------------------------------------------------+
 // Device Descriptors
@@ -51,29 +46,6 @@ uint8_t const * tud_descriptor_device_cb(void) {
 }
 
 //--------------------------------------------------------------------+
-// Configuration Descriptor
-//--------------------------------------------------------------------+
-#define CONFIG_UAC2_TOTAL_LEN    (TUD_CONFIG_DESC_LEN + TUD_AUDIO20_SPEAKER_STEREO_FB_MULTIALT_DESC_LEN)
-
-uint8_t const desc_uac2_configuration[] = {
-  // Config number, interface count, string index, total length, attribute, power in mA
-  TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_UAC2_TOTAL_LEN, 0x00, 100),
-
-  // First interface number, string index, EP Out, EP feedback, feedback EP size
-  TUD_AUDIO20_SPEAKER_STEREO_FB_MULTIALT_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, 0, UAC2_EPNUM_AUDIO_OUT, UAC2_EPNUM_AUDIO_FB | 0x80, UAC2_FB_EP_SIZE),
-};
-
-TU_VERIFY_STATIC(sizeof(desc_uac2_configuration) == CONFIG_UAC2_TOTAL_LEN, "Incorrect size");
-TU_VERIFY_STATIC(sizeof(desc_uac2_configuration) == TUD_CONFIG_DESC_LEN + UAC2_FUNC_DESC_LEN_NUM, "UAC2_FUNC_DESC_LEN_NUM mismatch");
-TU_VERIFY_STATIC(UAC2_EP_SZ_MAX <= 1023, "Full-Speed isochronous packet size limit exceeded");
-
-// Invoked when received GET CONFIGURATION DESCRIPTOR
-uint8_t const * tud_descriptor_configuration_cb(uint8_t index) {
-  (void) index; // for multiple configurations
-  return desc_uac2_configuration;
-}
-
-//--------------------------------------------------------------------+
 // String Descriptors
 //--------------------------------------------------------------------+
 enum {
@@ -88,9 +60,9 @@ static char const *string_desc_arr[] =
 {
   (const char[]) { 0x09, 0x04 },  // 0: is supported language is English (0x0409)
   MFG_NAME,                       // 1: Manufacturer
-  DEVICE_NAME,                    // 2: Product
+  USB_AUDIO_PRODUCT_NAME,         // 2: Product
   NULL,                           // 3: Serial = RP2350 unique board ID
-  DEVICE_NAME,                    // 4: Audio Interface
+  USB_AUDIO_PRODUCT_NAME,         // 4: Audio Interface
 };
 
 static uint16_t _desc_str[32 + 1];

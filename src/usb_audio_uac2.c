@@ -9,10 +9,62 @@
 
 #include "tusb.h"
 #include "uac2_compat.h"
-#include "usb_descriptors.h"
+#include "usb_audio_uac2.h"
 #include "common_types.h"
 #include "common.h"
 #include "usb_device_control.h"
+
+static const uint32_t uac2_sample_rates[USB_AUDIO_MAX_SAMPLE_RATES] = {
+    44100, 48000, 88200, 96000, 176400, 192000
+};
+
+const uint32_t *usb_audio_class_sample_rates(uint8_t *count)
+{
+    *count = USB_AUDIO_MAX_SAMPLE_RATES;
+    return uac2_sample_rates;
+}
+
+bool usb_audio_class_get_format(uint8_t alt, usb_audio_format_t *format)
+{
+    switch (alt)
+    {
+    case UAC2_ALT_16BIT:
+        *format = (usb_audio_format_t){2, 16, UAC2_MAX_RATE_16BIT};
+        return true;
+    case UAC2_ALT_24BIT:
+        *format = (usb_audio_format_t){3, 24, UAC2_MAX_RATE_24BIT};
+        return true;
+    case UAC2_ALT_32BIT:
+        *format = (usb_audio_format_t){4, 32, UAC2_MAX_RATE_32BIT};
+        return true;
+    default:
+        return false;
+    }
+}
+
+//--------------------------------------------------------------------+
+// UAC2 configuration descriptor
+//--------------------------------------------------------------------+
+#define CONFIG_UAC2_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_AUDIO20_SPEAKER_STEREO_FB_MULTIALT_DESC_LEN)
+
+static const uint8_t desc_uac2_configuration[] =
+{
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_UAC2_TOTAL_LEN, 0x00, 100),
+    TUD_AUDIO20_SPEAKER_STEREO_FB_MULTIALT_DESCRIPTOR(
+        ITF_NUM_AUDIO_CONTROL, 0, UAC2_EPNUM_AUDIO_OUT,
+        UAC2_EPNUM_AUDIO_FB | 0x80, UAC2_FB_EP_SIZE),
+};
+
+TU_VERIFY_STATIC(sizeof(desc_uac2_configuration) == CONFIG_UAC2_TOTAL_LEN, "Incorrect UAC2 descriptor size");
+TU_VERIFY_STATIC(sizeof(desc_uac2_configuration) == TUD_CONFIG_DESC_LEN + UAC2_FUNC_DESC_LEN_NUM,
+                 "UAC2_FUNC_DESC_LEN_NUM mismatch");
+TU_VERIFY_STATIC(UAC2_EP_SZ_MAX <= 1023, "Full-Speed isochronous packet size limit exceeded");
+
+uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
+{
+    (void)index;
+    return desc_uac2_configuration;
+}
 
 //--------------------------------------------------------------------+
 // Clock source (sample rate)
@@ -23,18 +75,22 @@ static bool clock_get_request(uint8_t rhport, tusb_control_request_t const *requ
 
   if (ctrl_sel == AUDIO20_CS_CTRL_SAM_FREQ) {
     if (request->bRequest == AUDIO20_CS_REQ_CUR) {
-      audio20_control_cur_4_t curf = { (int32_t) tu_htole32(audio_state.freq) };
+      audio20_control_cur_4_t curf = { (int32_t) tu_htole32(usb_audio_get_current_rate()) };
       return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &curf, sizeof(curf));
     } else if (request->bRequest == AUDIO20_CS_REQ_RANGE) {
-      audio20_control_range_4_n_t(USB_AUDIO_N_RATES) rangef = {
-        .wNumSubRanges = tu_htole16(USB_AUDIO_N_RATES)
-      };
-      for (uint8_t i = 0; i < USB_AUDIO_N_RATES; i++) {
-        rangef.subrange[i].bMin = (int32_t) usb_audio_sample_rates[i];
-        rangef.subrange[i].bMax = (int32_t) usb_audio_sample_rates[i];
-        rangef.subrange[i].bRes = 0;
-      }
-      return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &rangef, sizeof(rangef));
+    uint8_t rate_count;
+    const uint32_t *rates = usb_audio_class_sample_rates(&rate_count);
+    audio20_control_range_4_n_t(USB_AUDIO_MAX_SAMPLE_RATES) rangef = {
+      .wNumSubRanges = tu_htole16(rate_count)
+    };
+    for (uint8_t i = 0; i < rate_count; i++) {
+      rangef.subrange[i].bMin = (int32_t) rates[i];
+      rangef.subrange[i].bMax = (int32_t) rates[i];
+      rangef.subrange[i].bRes = 0;
+    }
+    const uint16_t range_size = (uint16_t)(sizeof(rangef.wNumSubRanges)
+        + rate_count * sizeof(rangef.subrange[0]));
+    return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &rangef, range_size);
     } else if (request->bRequest == 4) { // UAC2 CS_REQ_INFO = 4
       uint8_t info = 3; // GET and SET supported
       return tud_audio_buffer_and_schedule_control_xfer(rhport, request, &info, sizeof(info));
@@ -134,43 +190,85 @@ static bool feature_unit_set_request(tusb_control_request_t const *request, uint
 // TinyUSB audio class callbacks
 //--------------------------------------------------------------------+
 
-bool tud_audio_get_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p_request)
+bool tud_audio_get_req_entity_cb(
+    uint8_t rhport,
+    tusb_control_request_t const *p_request)
 {
-  uint8_t const entity_id = TU_U16_HIGH(p_request->wIndex);
+    uint8_t const entity_id =
+        TU_U16_HIGH(p_request->wIndex);
 
-  if (entity_id == UAC2_ENTITY_CLOCK)
-    return clock_get_request(rhport, p_request);
-  if (entity_id == UAC2_ENTITY_FEATURE_UNIT)
-    return feature_unit_get_request(rhport, p_request);
-  return false;
+    bool ok = false;
+
+    if (entity_id == UAC2_ENTITY_CLOCK)
+        ok = clock_get_request(rhport, p_request);
+    else if (entity_id == UAC2_ENTITY_FEATURE_UNIT)
+        ok = feature_unit_get_request(rhport, p_request);
+
+    usb_audio_record_event(
+        'G',
+        entity_id,
+        TU_U16_HIGH(p_request->wValue),
+        p_request->bRequest,
+        ok,
+        true);
+
+    return ok;
 }
 
-bool tud_audio_set_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p_request, uint8_t *buf)
+bool tud_audio_set_req_entity_cb(
+    uint8_t rhport,
+    tusb_control_request_t const *p_request,
+    uint8_t *buf)
 {
-  (void) rhport;
-  uint8_t const entity_id = TU_U16_HIGH(p_request->wIndex);
+    (void)rhport;
 
-  if (entity_id == UAC2_ENTITY_FEATURE_UNIT)
-    return feature_unit_set_request(p_request, buf);
-  if (entity_id == UAC2_ENTITY_CLOCK)
-    return clock_set_request(p_request, buf);
-  return false;
+    uint8_t const entity_id =
+        TU_U16_HIGH(p_request->wIndex);
+
+    bool ok = false;
+
+    if (entity_id == UAC2_ENTITY_FEATURE_UNIT)
+        ok = feature_unit_set_request(p_request, buf);
+    else if (entity_id == UAC2_ENTITY_CLOCK)
+        ok = clock_set_request(p_request, buf);
+
+    usb_audio_record_event(
+        'S',
+        entity_id,
+        TU_U16_HIGH(p_request->wValue),
+        p_request->bRequest,
+        ok,
+        true);
+
+    return ok;
 }
 
-bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_request)
+bool tud_audio_set_itf_cb(
+    uint8_t rhport,
+    tusb_control_request_t const *p_request)
 {
-  (void) rhport;
-  uint8_t const itf = tu_u16_low(p_request->wIndex);
-  uint8_t const alt = tu_u16_low(p_request->wValue);
+    (void)rhport;
 
-  if (itf != ITF_NUM_AUDIO_STREAMING)
+    uint8_t const itf = tu_u16_low(p_request->wIndex);
+    uint8_t const alt = tu_u16_low(p_request->wValue);
+
+    usb_audio_record_event(
+        alt == 0 ? 'C' : 'I',
+        itf,
+        alt,
+        0,
+        true,
+        false);
+
+    if (itf != ITF_NUM_AUDIO_STREAMING)
+        return true;
+
+    if (alt == 0)
+        usb_audio_stream_close();
+    else
+        return usb_audio_stream_open(alt);
+
     return true;
-
-  if (alt == 0)
-    usb_audio_stream_close();
-  else
-    usb_audio_stream_open(alt);
-  return true;
 }
 
 bool tud_audio_set_itf_close_ep_cb(uint8_t rhport, tusb_control_request_t const *p_request)
@@ -194,5 +292,13 @@ void tud_audio_feedback_params_cb(uint8_t func_id, uint8_t alt_itf, audio_feedba
 
 void tud_umount_cb(void)
 {
-  usb_audio_stream_close();
+    usb_audio_record_event(
+        'U',
+        0,
+        0,
+        0,
+        true,
+        false);
+
+    usb_audio_stream_close();
 }

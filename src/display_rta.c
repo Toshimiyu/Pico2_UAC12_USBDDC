@@ -7,6 +7,8 @@
 
 
 #include "display_rta.h"
+#include "common.h"
+#include "usb_audio_config.h"
 #include "transmit_to_dac.h"
 #include "ringbuffer.h"
 #include "pico/stdlib.h"
@@ -15,25 +17,6 @@
 #include <math.h>
 #include <string.h>
 #include <stdbool.h>
-
-// ===================================================
-// 液晶ディスプレイ GPIO ピン定義
-// ===================================================
-#ifndef LCD_SCK_PIN
-#define LCD_SCK_PIN   18
-#endif
-#ifndef LCD_MOSI_PIN
-#define LCD_MOSI_PIN  19
-#endif
-#ifndef LCD_CS_PIN
-#define LCD_CS_PIN    17
-#endif
-#ifndef LCD_DC_PIN
-#define LCD_DC_PIN    16
-#endif
-#ifndef LCD_BL_PIN
-#define LCD_BL_PIN    20
-#endif
 
 // ===================================================
 // カラーテーマ定義（共同制作：GEMINI Amber × COP Navy）
@@ -217,6 +200,13 @@ static uint16_t last_l_meter_marker = PEAK_NONE_Y;
 static uint16_t last_r_meter_marker = PEAK_NONE_Y;
 static uint32_t splash_start_us = 0;
 static uint8_t splash_stage = 0;   
+static display_page_t current_page = DISPLAY_PAGE_BOOT;
+static bool page_clear_pending = false;
+static uint16_t page_clear_row = 0;
+static bool page_ready = true;
+
+static display_button_t button_x;
+static display_button_t button_y;
 
 // ピークドット演出用バッファ
 static uint8_t peak_l_dots[SPECTRUM_BAND_COUNT] = {0};
@@ -241,15 +231,16 @@ extern volatile bool audio_data_seen;
 static volatile bool display_dirty = false;
 static bool render_pending = false;
 static uint8_t render_step = 0;
-static char format_render_text[20];
+#define FORMAT_TEXT_CHARS 18
+static char format_render_text[FORMAT_TEXT_CHARS + 1];
 static uint8_t format_render_pos = 0;
 static bool format_render_active = false;
 // フォーマット表示（ビット深度 / サンプリング周波数）は横倍角で描画する。
-#define FORMAT_TEXT_SCALE_X 1
+#define FORMAT_TEXT_CHAR_WIDTH 12
 #define FORMAT_TEXT_SCALE_Y 1
 #define FORMAT_TEXT_Y     203
-#define FORMAT_TEXT_X0    (160 - (19 * 8 * FORMAT_TEXT_SCALE_X) / 2)
-#define DISPLAY_MIN_AUDIO_HEADROOM_SAMPLES 512   
+#define FORMAT_TEXT_X0    (160 - (FORMAT_TEXT_CHARS * FORMAT_TEXT_CHAR_WIDTH) / 2)
+// DISPLAY_MIN_AUDIO_HEADROOM_SAMPLES is defined in common.h (follows the FB target level)
 
 static uint8_t lcd_fill_chunk[512];   
 
@@ -328,11 +319,10 @@ lcd_fill_rect(x, y, 1, h, color);
 lcd_fill_rect(x + w - 1, y, 1, h, color);
 }
 
-static void lcd_draw_char_scaled(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg,
-                                 uint8_t scale_x, uint8_t scale_y) {
+static void lcd_draw_char_scaled_width(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg,
+                                       uint16_t width, uint8_t scale_y) {
 if (c < ' ' || c > '~') c = ' ';
 uint8_t idx = c - ' ';
-uint16_t width = 8 * scale_x;
 uint16_t height = 8 * scale_y;
 
 if (x + width > 320 || y + height > 240) return;
@@ -347,20 +337,23 @@ int buf_idx = 0;
 for (int row = 0; row < 8; row++) {
 uint8_t line = font8x8[idx][row];
 for (int sy = 0; sy < scale_y; sy++) {
-for (int col = 0; col < 8; col++) {
-uint16_t px_color = (line & (0x80 >> col)) ? color : bg;
+for (uint16_t col = 0; col < width; col++) {
+uint16_t px_color = (line & (0x80 >> (col * 8 / width))) ? color : bg;
 uint8_t high = px_color >> 8;
 uint8_t low = px_color & 0xFF;
-for (int sx = 0; sx < scale_x; sx++) {
 buf[buf_idx++] = high;
 buf[buf_idx++] = low;
-}
 }
 }
 }
 
 spi_write_blocking(spi0, buf, buf_idx);
 gpio_put(LCD_CS_PIN, 1);
+}
+
+static void lcd_draw_char_scaled(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg,
+                                 uint8_t scale_x, uint8_t scale_y) {
+lcd_draw_char_scaled_width(x, y, c, color, bg, 8 * scale_x, scale_y);
 }
 
 static void lcd_draw_char(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg, uint8_t scale) {
@@ -415,10 +408,10 @@ static void prepare_requested_format(uint8_t bit_depth, uint32_t sample_rate_ten
 char buf[32];
 format_audio_info(buf, bit_depth, (float)sample_rate_tenth_khz / 10.0f);
 int len = 0; while (buf[len]) len++;
-if (len > 19) len = 19;
+if (len > FORMAT_TEXT_CHARS) len = FORMAT_TEXT_CHARS;
 memset(format_render_text, ' ', sizeof(format_render_text) - 1);
 format_render_text[sizeof(format_render_text) - 1] = '\0';
-const uint8_t start = (uint8_t)((19 - len) / 2);
+const uint8_t start = (uint8_t)((FORMAT_TEXT_CHARS - len) / 2);
 memcpy(&format_render_text[start], buf, (size_t)len);
 format_render_pos = 0;
 format_render_active = true;
@@ -638,33 +631,48 @@ static const char *const boot_steps[6] = {
     "System Ready"
 };
 
-lcd_draw_rect(8, 8, 304, 224, COLOR_DIVIDER);
-lcd_draw_rect(10, 10, 300, 220, COLOR_DIVIDER);
+#ifndef BUILD_TIMESTAMP
+    #define BUILD_TIMESTAMP "Unknown Build"
+    #endif
 
-lcd_draw_string(20, 20, "SYSTEM BOOT: Quad Heritage", COLOR_TITLE, COLOR_BG, 1);
-lcd_fill_rect(20, 32, 280, 1, COLOR_DIVIDER);
+    lcd_draw_rect(8, 8, 304, 224, COLOR_DIVIDER);
+    lcd_draw_rect(10, 10, 300, 220, COLOR_DIVIDER);
 
-lcd_draw_string(20, 44, "Pico2 UAC2 USB DDC", COLOR_FREQ_TEXT, COLOR_BG, 1);
-lcd_draw_string(20, 58, "Copilot x GEMINI x ChatGPT x Claude", COLOR_CH_LABEL, COLOR_BG, 1);
-lcd_draw_string(20, 72, "Customized by Toshimiyu", COLOR_L_THEME, COLOR_BG, 1);
+    lcd_draw_string(20, 20, "SYSTEM BOOT: Quad Heritage", COLOR_TITLE, COLOR_BG, 1);
+    lcd_fill_rect(20, 32, 280, 1, COLOR_DIVIDER);
 
-lcd_fill_rect(20, 92, 280, 48, 0x0081);
-lcd_draw_rect(20, 92, 280, 48, COLOR_DIVIDER);
+    lcd_draw_string(20, 44, "Pico2 UAC12 USB DDC", COLOR_TITLE, COLOR_BG, 1);
+    lcd_draw_string(20, 58, "Copilot x GEMINI x ChatGPT x Claude", COLOR_CH_LABEL, COLOR_BG, 1);
+    lcd_draw_string(20, 72, "Customized by Toshimiyu", COLOR_L_THEME, COLOR_BG, 1);
 
-lcd_draw_string(28, 101, "Architecture : Pico2 & PCM5100A", COLOR_FREQ_TEXT, 0x0081, 1);
-lcd_draw_string(28, 117, "Color Theme  : Amber x Navy", COLOR_FREQ_TEXT, 0x0081, 1);
+    // --- 中央情報ボックス ---
+    lcd_fill_rect(20, 88, 280, 70, 0x0081);
+    lcd_draw_rect(20, 88, 280, 70, COLOR_DIVIDER);
 
-lcd_fill_rect(20, 150, 280, 1, COLOR_DIVIDER);
-lcd_draw_string(20, 162, "Initializing Subsystems", COLOR_TITLE, COLOR_BG, 1);
+    lcd_draw_string(28, 95,  "Architecture : Pico2 & PCM5100A", COLOR_FREQ_TEXT, 0x0081, 1);
+    lcd_draw_string(28, 109, "Version      : v1.2",           COLOR_FREQ_TEXT, 0x0081, 1);
 
-splash_start_us = time_us_32();
+#if USB_AUDIO_CLASS_VERSION == 1
+    lcd_draw_string(28, 123, "USB Audio    : UAC1", COLOR_FREQ_TEXT, 0x0081, 1);
+#else
+    lcd_draw_string(28, 123, "USB Audio    : UAC2", COLOR_FREQ_TEXT, 0x0081, 1);
+#endif
 
-splash_stage = 255;
+    char build_buf[40];
+    snprintf(build_buf, sizeof(build_buf), "Build        : %s", BUILD_TIMESTAMP);
+    lcd_draw_string(28, 137, build_buf, COLOR_FREQ_TEXT, 0x0081, 1);
+    // -----------------------------------------------------------------
 
-lcd_draw_string(240, 162, ".", COLOR_TITLE, COLOR_BG, 1);
-lcd_draw_string(20, 178, boot_steps[0], COLOR_DIVIDER, COLOR_BG, 1);
+    lcd_fill_rect(20, 162, 280, 1, COLOR_DIVIDER);
+    lcd_draw_string(20, 174, "Initializing Subsystems", COLOR_TITLE, COLOR_BG, 1);
+
+    splash_start_us = time_us_32();
+
+    lcd_draw_string(240, 174, ".", COLOR_TITLE, COLOR_BG, 1);
+    lcd_draw_string(20, 190, boot_steps[splash_stage <= 5 ? splash_stage : 0], COLOR_DIVIDER, COLOR_BG, 1);
+    lcd_fill_rect(20, 210, 280, 1, COLOR_DIVIDER);
+    lcd_draw_string(32, 218, "X: PREVIOUS PAGE   Y: NEXT PAGE", COLOR_CH_LABEL, COLOR_BG, 1);
 }
-
 
 void display_rta_set_boot_stage(uint8_t stage)
 {
@@ -682,11 +690,17 @@ void display_rta_set_boot_stage(uint8_t stage)
         stage = 5;
     }
 
-    lcd_fill_rect(20, 178, 250, 12, COLOR_BG);
+    splash_stage = stage;
+    if (current_page != DISPLAY_PAGE_BOOT || page_clear_pending)
+    {
+        return;
+    }
+
+    lcd_fill_rect(20, 190, 250, 12, COLOR_BG);
 
     lcd_draw_string(
         20,
-        178,
+        190,
         boot_steps[stage],
         COLOR_DIVIDER,
         COLOR_BG,
@@ -700,11 +714,11 @@ void display_rta_set_boot_stage(uint8_t stage)
         dots[i] = '.';
     }
 
-    lcd_fill_rect(240, 162, 48, 8, COLOR_BG);
+    lcd_fill_rect(240, 174, 48, 8, COLOR_BG);
 
     lcd_draw_string(
         240,
-        162,
+        174,
         dots,
         COLOR_TITLE,
         COLOR_BG,
@@ -736,6 +750,20 @@ for (uint pin = 6; pin <= 8; ++pin) {
     gpio_put(pin, true);
     gpio_set_dir(pin, GPIO_OUT);
 }
+
+gpio_init(DISPLAY_BUTTON_X_PIN);
+gpio_set_dir(DISPLAY_BUTTON_X_PIN, GPIO_IN);
+gpio_pull_up(DISPLAY_BUTTON_X_PIN);
+gpio_init(DISPLAY_BUTTON_Y_PIN);
+gpio_set_dir(DISPLAY_BUTTON_Y_PIN, GPIO_IN);
+gpio_pull_up(DISPLAY_BUTTON_Y_PIN);
+const uint32_t buttons_initialized_us = time_us_32();
+button_x.raw_high = gpio_get(DISPLAY_BUTTON_X_PIN);
+button_x.stable_high = button_x.raw_high;
+button_x.raw_changed_us = buttons_initialized_us;
+button_y.raw_high = gpio_get(DISPLAY_BUTTON_Y_PIN);
+button_y.stable_high = button_y.raw_high;
+button_y.raw_changed_us = buttons_initialized_us;
 
 lcd_write_cmd(0x01); // SWRESET
 sleep_ms(150);
@@ -772,14 +800,31 @@ const char *text = freq_labels[i].text;
 }
 }
 
-void display_rta_init(void) {
+static void draw_playback_screen(void) {
+memset(prev_l_bands, 0, sizeof(prev_l_bands));
+memset(prev_r_bands, 0, sizeof(prev_r_bands));
+memset(peak_l_dots, 0, sizeof(peak_l_dots));
+memset(peak_r_dots, 0, sizeof(peak_r_dots));
+memset(peak_l_hold_until, 0, sizeof(peak_l_hold_until));
+memset(peak_r_hold_until, 0, sizeof(peak_r_hold_until));
+memset(peak_l_next_fall, 0, sizeof(peak_l_next_fall));
+memset(peak_r_next_fall, 0, sizeof(peak_r_next_fall));
+memset(bar_last_update_us, 0, sizeof(bar_last_update_us));
+prev_l_meter_width = 0;
+prev_r_meter_width = 0;
+peak_l_meter_width = 0;
+peak_r_meter_width = 0;
+last_l_meter_marker = PEAK_NONE_Y;
+last_r_meter_marker = PEAK_NONE_Y;
+reset_peak_dots_pending = true;
+render_pending = false;
+render_step = 0;
 for (int i = 0; i < SPECTRUM_BAND_COUNT; i++) {
 last_l_peak_y[i] = PEAK_NONE_Y;
 last_r_peak_y[i] = PEAK_NONE_Y;
 }
-lcd_fill_color(COLOR_BG);
 
-lcd_draw_string(16, 6, "Pico2 UAC2 USB DDC", COLOR_TITLE, COLOR_BG, 2);
+lcd_draw_string(8, 6, "Pico2 UAC12 USB DDC", COLOR_TITLE, COLOR_BG, 2);
 lcd_fill_rect(10, 26, 300, 1, COLOR_DIVIDER);
 
 lcd_draw_string(10, 30, "L", COLOR_CH_LABEL, COLOR_BG, 1);
@@ -808,8 +853,94 @@ draw_rta_labels(RTA_L_X_START);
 draw_rta_labels(RTA_R_X_START);
 
 lcd_fill_rect(10, 198, 300, 1, COLOR_DIVIDER);
-display_rta_set_format(32, 384.0f);
+lcd_fill_rect(10, 218, 300, 1, COLOR_DIVIDER);
+lcd_draw_string(32, 226, "X: PREVIOUS PAGE   Y: NEXT PAGE", COLOR_CH_LABEL, COLOR_BG, 1);
 display_ready = true;
+}
+
+void display_rta_init(void) {
+lcd_fill_color(COLOR_BG);
+draw_playback_screen();
+}
+
+display_page_t display_rta_get_page(void)
+{
+    return current_page;
+}
+
+void display_rta_set_page(display_page_t page)
+{
+    if (page > DISPLAY_PAGE_DIAGNOSTICS || page == current_page)
+    {
+        return;
+    }
+
+    current_page = page;
+    page_clear_row = 0;
+    page_clear_pending = true;
+    page_ready = false;
+}
+
+bool display_rta_page_service(void)
+{
+    if (!page_clear_pending)
+    {
+        return false;
+    }
+
+    if (page_clear_row < 240)
+    {
+        // Yield to USB/audio work between SPI transfers while replacing a full screen.
+        memset(lcd_fill_chunk, 0, sizeof(lcd_fill_chunk));
+        lcd_set_window(0, page_clear_row, 319, page_clear_row);
+        gpio_put(LCD_DC_PIN, 1);
+        gpio_put(LCD_CS_PIN, 0);
+        spi_write_blocking(spi0, lcd_fill_chunk, sizeof(lcd_fill_chunk));
+        spi_write_blocking(spi0, lcd_fill_chunk, 128);
+        gpio_put(LCD_CS_PIN, 1);
+        page_clear_row++;
+        if (page_clear_row < 240)
+        {
+            return false;
+        }
+    }
+
+    page_clear_pending = false;
+    switch (current_page)
+    {
+    case DISPLAY_PAGE_BOOT:
+        display_rta_draw_splash_screen();
+        display_rta_set_boot_stage(splash_stage);
+        break;
+    case DISPLAY_PAGE_PLAYBACK:
+        draw_playback_screen();
+        break;
+    case DISPLAY_PAGE_DIAGNOSTICS:
+        break;
+    }
+    page_ready = true;
+    return true;
+}
+
+bool display_rta_page_ready(void)
+{
+    return page_ready;
+}
+
+bool display_rta_process_buttons(void)
+{
+    const uint32_t now = time_us_32();
+    const bool x_pressed = display_button_pressed(&button_x, DISPLAY_BUTTON_X_PIN, now);
+    const bool y_pressed = display_button_pressed(&button_y, DISPLAY_BUTTON_Y_PIN, now);
+    if (x_pressed == y_pressed)
+    {
+        return false;
+    }
+
+    const display_page_t next_page = (display_page_t)(
+        (current_page + (y_pressed ? 1 : 2)) % 3);
+    display_rta_set_page(next_page);
+    return true;
 }
 
 void display_rta_service(void) {
@@ -852,7 +983,7 @@ return false;
 }
 
 void display_rta_render_service(void) {
-if (!display_ready) return;
+if (!display_ready || !page_ready || current_page != DISPLAY_PAGE_PLAYBACK) return;
 
 const uint32_t now = time_us_32();
 const bool audio_active = audio_data_seen &&
@@ -875,10 +1006,10 @@ const uint32_t sample_rate = requested_sample_rate_tenth_khz;
 format_pending = false;
 prepare_requested_format(bit_depth, sample_rate);
 }
-const uint16_t x = (uint16_t)FORMAT_TEXT_X0 + (uint16_t)format_render_pos * (8u * FORMAT_TEXT_SCALE_X);
-lcd_draw_char_scaled(x, FORMAT_TEXT_Y, format_render_text[format_render_pos],
-COLOR_FMT_TEXT, COLOR_BG, FORMAT_TEXT_SCALE_X, FORMAT_TEXT_SCALE_Y);
-if (++format_render_pos >= 19) format_render_active = false;
+const uint16_t x = (uint16_t)FORMAT_TEXT_X0 + (uint16_t)format_render_pos * FORMAT_TEXT_CHAR_WIDTH;
+lcd_draw_char_scaled_width(x, FORMAT_TEXT_Y, format_render_text[format_render_pos],
+      COLOR_FMT_TEXT, COLOR_BG, FORMAT_TEXT_CHAR_WIDTH, FORMAT_TEXT_SCALE_Y);
+if (++format_render_pos >= FORMAT_TEXT_CHARS) format_render_active = false;
 return;
 }
 

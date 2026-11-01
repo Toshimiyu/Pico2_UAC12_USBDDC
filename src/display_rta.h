@@ -8,12 +8,25 @@
 #ifndef DISPLAY_RTA_H
 #define DISPLAY_RTA_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "spectrum.h"
+
+typedef enum
+{
+	DISPLAY_PAGE_BOOT = 0,
+	DISPLAY_PAGE_PLAYBACK,
+	DISPLAY_PAGE_DIAGNOSTICS
+} display_page_t;
 
 void display_rta_init(void);
 void display_rta_hw_init(void);
 void display_rta_clear_screen(void);
+void display_rta_set_page(display_page_t page);
+display_page_t display_rta_get_page(void);
+bool display_rta_page_service(void);
+bool display_rta_page_ready(void);
+bool display_rta_process_buttons(void);
 void display_rta_splash_service(void);
 void display_rta_update(void);
 void display_rta_service(void);

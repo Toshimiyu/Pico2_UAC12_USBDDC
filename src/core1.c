@@ -20,7 +20,6 @@
 #include "common.h"
 #include "transmit_to_dac.h"
 #include "ringbuffer.h"
-#include "debug_with_gpio.h"
 #include "display_rta.h"
 
 void core1_main()

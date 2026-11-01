@@ -20,8 +20,7 @@
 #include "pico/multicore.h"
 #include "tusb.h"
 #include "usb_device_control.h"
-#include "uac2_compat.h"
-#include "usb_descriptors.h"
+#include "usb_audio_class.h"
 #include "common_types.h"
 #include "common.h"
 #include "ringbuffer.h"
@@ -57,6 +56,11 @@ volatile bool audio_data_seen = false;
 #define FB_LIMIT_PPM (3000.0f)	   // hard limit of the correction : +-0.3 % of fs (never exceeds FB_ADJ_LIMIT Hz)
 #define FB_UPDATE_PERIOD_US (1000) // one update per USB frame
 #define HOST_RATE_UPDATE_US (250000u)
+#define EVT_LOG_N 24
+
+// Sample-rate change: how long to wait for the Ring + DMA pool to play out before the stop is forced.
+// Worst case drain = (Ring 2048 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 69 ms.
+#define SWITCH_DRAIN_TIMEOUT_US (100000u)
 
 // ---- Diagnostic build switches (NEVER ship with FIXED_FEEDBACK_TEST = 1) -------------------------
 // FIXED_FEEDBACK_TEST = 1 : feedback control OFF. The requested rate is fs + FIXED_FEEDBACK_OFFSET_HZ.
@@ -83,6 +87,56 @@ static usb_audio_stats_t stats;
 static volatile uint8_t cur_alt = 0;
 static volatile uint8_t bytes_per_sample = 2;
 static volatile bool rate_unsupported = false;
+static char evt_log[EVT_LOG_N][8];
+static uint32_t evt_time_us[EVT_LOG_N];
+static uint32_t evt_total = 0;
+
+static char hex_digit(uint8_t value)
+{
+	value &= 0x0F;
+	return (char)(value < 10 ? ('0' + value) : ('A' + value - 10));
+}
+
+void usb_audio_record_event(char kind, uint8_t a, uint8_t b, uint8_t c, bool ok, bool has_c)
+{
+	const uint32_t index = evt_total % EVT_LOG_N;
+	char *event = evt_log[index];
+	evt_time_us[index] = time_us_32();
+	event[0] = kind;
+	event[1] = hex_digit(a >> 4);
+	event[2] = hex_digit(a);
+	event[3] = hex_digit(b >> 4);
+	event[4] = hex_digit(b);
+	event[5] = has_c ? hex_digit(c) : ' ';
+	event[6] = ok ? '+' : '-';
+	event[7] = '\0';
+	evt_total++;
+}
+
+void usb_audio_get_event(uint32_t age, char out[8])
+{
+	if (age >= EVT_LOG_N || age >= evt_total)
+	{
+		memset(out, ' ', 7);
+		out[7] = '\0';
+		return;
+	}
+
+	memcpy(out, evt_log[(evt_total - 1u - age) % EVT_LOG_N], 8);
+}
+
+uint32_t usb_audio_get_event_time_us(uint32_t age)
+{
+	if (age >= EVT_LOG_N || age >= evt_total)
+		return 0;
+	return evt_time_us[(evt_total - 1u - age) % EVT_LOG_N];
+}
+
+void usb_audio_log_event(char kind, uint8_t a, uint8_t b)
+{
+	usb_audio_record_event(kind, a, b, 0, true, false);
+}
+
 typedef struct
 {
 	float level_f;	 // filtered buffer level
@@ -93,49 +147,90 @@ typedef struct
 } fb_ctrl_t;
 static fb_ctrl_t fb;
 
-const uint32_t usb_audio_sample_rates[USB_AUDIO_N_RATES] = {44100, 48000, 88200, 96000, 176400, 192000};
+// Sample-rate switch sequence (Ver1.2), Core0 only
+static uint32_t pending_freq = 0;	// rate requested by SET_CUR, applied when the output is quiet
+static uint32_t switch_t0_us = 0;	// time the SWITCHING state was entered
+static uint32_t loop0_prev_us = 0;	// previous usb_audio_task() call (loop-interval diagnostics)
 
 static uint8_t rx_raw[RX_CHUNK_FRAMES * 8];
 static float ep_Lch[RX_CHUNK_FRAMES];
 static float ep_Rch[RX_CHUNK_FRAMES];
 static int32_t pcm_stereo[RX_CHUNK_FRAMES * 2u];
 
-// ---- Host sample-rate measurement (diagnostics shown on the LCD) ---------------------------------------
-// Counts the frames the host really delivers (also those that are discarded) and converts them to Hz once
-// per second. If this is far from the nominal rate the host is not following the requested feedback.
+// ---- Host sample-rate measurement ----------------------------------
+
+// Counts the frames actually received from the host
+
 static uint32_t rx_frames_counter = 0;
 static uint32_t host_win_t0_us = 0;
 static uint32_t host_win_frames0 = 0;
 static uint32_t host_rate_hz = 0;
+
+// ---- Packet statistics ---------------------------------------------
+
+static volatile uint32_t pkt_count_total = 0;
+static volatile uint32_t pkt_bytes_total = 0;
+
+static uint32_t pkt_win_count0 = 0;
+static uint32_t pkt_win_bytes0 = 0;
+
+static uint32_t pkt_per_sec = 0;
+static uint32_t pkt_avg_bytes = 0;
+
+#if defined(TUD_AUDIO_DESC_IAD)
+
+bool tud_audio_rx_done_pre_read_cb(
+    uint8_t rhport,
+    uint16_t n_bytes_received,
+    uint8_t func_id,
+    uint8_t ep_out,
+    uint8_t cur_alt_setting)
+
+#else
+
+bool tud_audio_rx_done_isr(
+    uint8_t rhport,
+    uint16_t n_bytes_received,
+    uint8_t func_id,
+    uint8_t ep_out,
+    uint8_t cur_alt_setting)
+
+#endif
+{
+    (void)rhport;
+    (void)func_id;
+    (void)ep_out;
+    (void)cur_alt_setting;
+
+    pkt_count_total++;
+    pkt_bytes_total += n_bytes_received;
+
+    return true;
+}
 
 //--------------------------------------------------------------------+
 // Helpers
 //--------------------------------------------------------------------+
 bool usb_audio_rate_supported(uint32_t freq)
 {
-	for (uint32_t i = 0; i < USB_AUDIO_N_RATES; i++)
-		if (usb_audio_sample_rates[i] == freq)
+	uint8_t rate_count;
+	const uint32_t *rates = usb_audio_class_sample_rates(&rate_count);
+	for (uint8_t i = 0; i < rate_count; i++)
+		if (rates[i] == freq)
 			return true;
 	return false;
 }
 
-static uint32_t max_rate_of_alt(uint8_t alt)
+static bool stream_rate_supported(uint8_t alt, uint32_t rate)
 {
-	switch (alt)
-	{
-	case UAC2_ALT_24BIT:
-		return UAC2_MAX_RATE_24BIT;
-	case UAC2_ALT_32BIT:
-		return UAC2_MAX_RATE_32BIT;
-	case UAC2_ALT_16BIT:
-	default:
-		return UAC2_MAX_RATE_16BIT;
-	}
+	usb_audio_format_t format;
+	return usb_audio_class_get_format(alt, &format) && rate <= format.max_rate_hz;
 }
 
 static void set_state(usb_audio_state_t s)
 {
 	stats.state = s;
+	dma_diag.armed = (s == USB_AUDIO_STREAMING); // Core1 collects Ring MIN/MAX only while STREAMING
 }
 
 static void fb_reset(void)
@@ -157,83 +252,167 @@ static void level_stats_reset(void)
 	stats.win_slope = 0;
 	stats.level_min = INT32_MAX;
 	stats.level_max = 0;
+	stats.max_hf_diff = 0;
+	stats.loop0_max_us = 0;
+	stats.loop0_over_count = 0;
+	loop0_prev_us = 0; // the next pass only sets the baseline
+	dma_diag_reset();
 	stats.win_avg = stats.win_min = stats.win_max = 0;
 }
 
+// Frames thrown away together with the Ring contents are accounted (drop_clear_frames)
 static void clear_audio_buffers(void)
 {
+	const int64_t used = get_size_using(&buffer_audio);
+	if (used > 0)
+		stats.drop_clear_frames += (uint32_t)(used / 2);
 	clear_ringbuffer(&buffer_audio);
 }
 
+// Flush the TinyUSB FIFO and return how many stereo frames it held
+static uint32_t fifo_flush_frames(void)
+{
+	const uint32_t bytes = tud_audio_available();
+	tud_audio_clear_ep_out_ff();
+	return bytes / (2u * bytes_per_sample);
+}
+
 //--------------------------------------------------------------------+
-// Sample-rate change: stop output, switch clock, then start a fresh buffer epoch.
+// Sample-rate change (Ver1.2 switch state machine)
+//
+//   SET_CUR       -> remember pending_freq, state = SWITCHING (nothing else is touched yet)
+//   SWITCHING     -> USB data is discarded and feedback is paused. Core1 keeps playing the Ring and the
+//                    DMA pool with the OLD clock and stops by itself (enable_output = false) when both
+//                    are empty (dma_tx_start()).
+//   quiet         -> [Core1 locked out] renew_clock, clear Ring / USB FIFO, fb_reset
+//   BUFFERING     -> the existing gate refills to the FB target and restarts PIO (reset_i2s_freq)
+//
+// Only Core0 takes part: no change is needed in dma_tx_start().
 //--------------------------------------------------------------------+
+static void switch_begin(uint32_t freq)
+{
+	pending_freq = freq;
+	if (stats.state == USB_AUDIO_SWITCHING)
+		return; // already draining: only the target rate changes, keep the start time
+
+	switch_t0_us = time_us_32();
+	set_state(USB_AUDIO_SWITCHING);
+	usb_audio_log_event('W', (uint8_t)(freq / 1000u), 0);
+}
+
+// GET_CUR must already report the new rate while the switch is pending
+uint32_t usb_audio_get_current_rate(void)
+{
+	return (stats.state == USB_AUDIO_SWITCHING) ? pending_freq : audio_state.freq;
+}
+
 void usb_audio_apply_sample_rate(uint32_t new_freq)
 {
-	if (audio_state.freq == new_freq)
+	if (stats.state != USB_AUDIO_SWITCHING && audio_state.freq == new_freq)
 		return;
 
-	set_state(USB_AUDIO_IDLE);
+	switch_begin(new_freq);
+}
+
+// Called every usb_audio_task() pass, right after tud_task()
+static void service_switch(void)
+{
+	if (stats.state != USB_AUDIO_SWITCHING)
+		return;
+
+	const uint32_t waited_us = time_us_32() - switch_t0_us;
+	const bool quiet = !enable_output && (dma_tx.using == 0);
+	const bool timeout = !quiet && (waited_us >= SWITCH_DRAIN_TIMEOUT_US);
+	if (!quiet && !timeout)
+		return;
+
+	usb_audio_log_event('D', (uint8_t)(waited_us / 1000u), timeout ? 1 : 0);
+
+	const bool freq_changed = (pending_freq != audio_state.freq);
+	bool forced = timeout;
+
 	multicore_lockout_start_blocking();
-	audio_state.freq = new_freq;
-	renew_clock(is_high_power_mode);
+
+	// Check again with Core1 frozen: it may have (re)started output after the check above.
+	if (enable_output || dma_tx.using != 0)
+	{
+		stats.drop_clear_frames += dma_tx_pool_frames(); // queued PCM that will never be played
+		dma_stop_and_clear();
+		forced = true;
+	}
+
+	if (freq_changed)
+	{
+		audio_state.freq = pending_freq;
+		renew_clock();
+	}
 	clear_audio_buffers();
-	tud_audio_clear_ep_out_ff();
+	stats.drop_switch_frames += fifo_flush_frames();
 	fb_reset();
 	level_stats_reset();
+
 	multicore_lockout_end_blocking();
 
-	rate_unsupported = (cur_alt != 0) && (new_freq > max_rate_of_alt(cur_alt));
+	if (freq_changed)
+		stats.switch_count++;
+	if (timeout)
+		stats.switch_timeout_count++;
+	stats.switch_drain_us = waited_us;
+
+	// Full-Speed can not carry 24/32bit above 96kHz : do not pretend to play it
+	rate_unsupported = (cur_alt != 0) && !stream_rate_supported(cur_alt, audio_state.freq);
 	if (rate_unsupported)
 		stats.rate_limit_violation++;
 
-	if (cur_alt != 0 && !rate_unsupported)
-		set_state(USB_AUDIO_BUFFERING);
-	else
-		set_state(USB_AUDIO_IDLE);
+	usb_audio_log_event('K', (uint8_t)(audio_state.freq / 1000u), forced ? 1 : 0);
+
+	set_state((cur_alt != 0 && !rate_unsupported) ? USB_AUDIO_BUFFERING : USB_AUDIO_IDLE);
 }
 
 //--------------------------------------------------------------------+
 // Stream open / close (AS interface alternate setting)
 //--------------------------------------------------------------------+
-void usb_audio_stream_open(uint8_t alt)
+bool usb_audio_stream_open(uint8_t alt)
 {
-	cur_alt = alt;
-	switch (alt)
-	{
-	case UAC2_ALT_32BIT:
-		bytes_per_sample = 4;
-		audio_state.bit_depth = 32;
-		break;
-	case UAC2_ALT_24BIT:
-		bytes_per_sample = 3;
-		audio_state.bit_depth = 24;
-		break;
-	case UAC2_ALT_16BIT:
-	default:
-		bytes_per_sample = 2;
-		audio_state.bit_depth = 16;
-		break;
-	}
+	usb_audio_format_t format;
+	if (!usb_audio_class_get_format(alt, &format))
+		return false;
 
+	cur_alt = alt;
+	bytes_per_sample = format.bytes_per_sample;
+	audio_state.bit_depth = format.bit_depth;
+
+	// A rate change is in progress: service_switch() finishes it and picks up the alt recorded above.
+	if (stats.state == USB_AUDIO_SWITCHING)
+		return true;
+
+	// Same-rate (re)open: the clock does not change, so there is nothing to wait for. Start a fresh
+	// buffer epoch, but with Core1 frozen: clear_ringbuffer() takes no spinlock, so clearing while
+	// Core1 reads the Ring could leave size_using negative.
 	// Full-Speed can not carry 24/32bit above 96kHz : do not pretend to play it
-	rate_unsupported = (audio_state.freq > max_rate_of_alt(alt));
+	rate_unsupported = !stream_rate_supported(alt, audio_state.freq);
 	if (rate_unsupported)
 		stats.rate_limit_violation++;
 
-	tud_audio_clear_ep_out_ff();
+	multicore_lockout_start_blocking();
+	stats.drop_clear_frames += fifo_flush_frames();
 	clear_audio_buffers();
 	fb_reset();
 	level_stats_reset();
+	multicore_lockout_end_blocking();
 	set_state(rate_unsupported ? USB_AUDIO_IDLE : USB_AUDIO_BUFFERING);
+	return true;
 }
 
 void usb_audio_stream_close(void)
 {
 	cur_alt = 0;
 	rate_unsupported = false;
-	set_state(USB_AUDIO_IDLE);
-	tud_audio_clear_ep_out_ff();
+	// A pending rate change keeps running: it will end in IDLE because cur_alt is 0 now.
+	// Otherwise Core1 simply plays out what is left in the Ring / DMA pool.
+	if (stats.state != USB_AUDIO_SWITCHING)
+		set_state(USB_AUDIO_IDLE);
+	stats.drop_clear_frames += fifo_flush_frames(); // FIFO tail the host sent just before alt 0
 }
 
 //--------------------------------------------------------------------+
@@ -309,15 +488,26 @@ static void report_peak(const float *left, const float *right, uint32_t frames)
 static void service_rx(void)
 {
 	const usb_audio_state_t st = stats.state;
-	if (st == USB_AUDIO_IDLE || st == USB_AUDIO_OVERFLOW_FATAL)
+	if (st == USB_AUDIO_IDLE || st == USB_AUDIO_OVERFLOW_FATAL || st == USB_AUDIO_SWITCHING)
 	{
-		const uint16_t discard = tud_audio_available();
-		if (discard)
-		{
-			rx_frames_counter += discard / (2u * bytes_per_sample);
-			tud_audio_clear_ep_out_ff();
-		}
-		return;
+    	const uint16_t discard = tud_audio_available();
+
+    	if (discard)
+    	{
+        	{
+				const uint32_t lost = discard / (2u * bytes_per_sample);
+				rx_frames_counter += lost;
+				if (st == USB_AUDIO_SWITCHING)
+					stats.drop_switch_frames += lost;
+				else if (st == USB_AUDIO_IDLE)
+					stats.drop_idle_frames += lost;
+				else
+					stats.drop_ovf_frames += lost; // OVERFLOW_FATAL: new data is discarded until the Ring recovers
+			}
+        	tud_audio_clear_ep_out_ff();
+    	}
+
+    	return;
 	}
 
 	const uint8_t bps = bytes_per_sample;
@@ -326,10 +516,17 @@ static void service_rx(void)
 	const uint16_t fifo_depth = CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ;
 	if (avail > (fifo_depth / 4u) * 3u)
 	{
-		rx_frames_counter += avail / frame_bytes;
-		tud_audio_clear_ep_out_ff();
-		stats.fifo_resync_count++;
-		return;
+    	{
+			const uint32_t lost = avail / frame_bytes;
+			rx_frames_counter += lost;
+			stats.drop_fifo_frames += lost;
+		}
+
+    	tud_audio_clear_ep_out_ff();
+
+    	stats.fifo_resync_count++;
+
+    	return;
 	}
 
 	while (avail >= frame_bytes)
@@ -346,8 +543,10 @@ static void service_rx(void)
 
 		const uint16_t got = tud_audio_read(rx_raw, (uint16_t)(frames * frame_bytes));
 		frames = got / frame_bytes;
-		if (frames == 0)
-			break;
+
+			if (frames == 0)
+    		break;
+
 		rx_frames_counter += frames;
 
 		pcm_to_float(rx_raw, frames, bps, ep_Lch, ep_Rch);
@@ -364,6 +563,7 @@ static void service_rx(void)
 		spectrum_feed_block(ep_Lch, ep_Rch, frames);
 		if (ringbuf_write_array_spinlock(pcm_stereo, frames * 2u, &buffer_audio) < 0)
 		{
+			stats.drop_ovf_frames += frames; // already read from the FIFO, the Ring refused it
 			stats.overflow_count++;
 			set_state(USB_AUDIO_OVERFLOW_FATAL);
 			break;
@@ -383,6 +583,12 @@ static void service_state(void)
 {
 	const int32_t level = (int32_t)audio_ring_total_frames();
 	stats.level_now = level;
+	stats.ring_pool_now = level + (int32_t)dma_tx_pool_frames();
+	stats.output_stop_count = dma_diag.output_stop_count;
+	stats.rx_frames = rx_frames_counter;
+	stats.loop1_max_us = dma_diag.loop_max_us;
+	stats.loop1_over_count = dma_diag.loop_over_count;
+	stats.tail_block_count = dma_diag.tail_block_count;
 
 	switch (stats.state)
 	{
@@ -395,10 +601,10 @@ static void service_state(void)
 		break;
 
 	case USB_AUDIO_STREAMING:
-		if (level < stats.level_min)
-			stats.level_min = level;
-		if (level > stats.level_max)
-			stats.level_max = level;
+		// MIN / MAX are collected by Core1 at every Ring fetch (dma_tx_start). The level sampled here
+		// would miss the minimum right after a block was taken.
+		stats.level_min = dma_diag.level_min;
+		stats.level_max = dma_diag.level_max;
 
 		// 1 s window statistics (diagnostics only)
 		{
@@ -454,6 +660,7 @@ static void service_state(void)
 			set_state(USB_AUDIO_BUFFERING);
 		break;
 
+	case USB_AUDIO_SWITCHING: // handled by service_switch()
 	case USB_AUDIO_IDLE:
 	default:
 		break;
@@ -466,7 +673,7 @@ static void service_state(void)
 static void service_feedback(void)
 {
 const usb_audio_state_t st = stats.state;
-if (st == USB_AUDIO_IDLE)
+if (st == USB_AUDIO_IDLE || st == USB_AUDIO_SWITCHING)
 return;
 
 const uint32_t now = time_us_32();
@@ -545,34 +752,74 @@ else
 const float rate_hz = (float)fs + adj_hz;
 stats.feedback_hz = rate_hz;
 
-
-	// 16.16 samples per 1 ms frame
-	const uint32_t value = (uint32_t)((double)rate_hz * 65.536 + 0.5);
-	if (fb.force_send || value != fb.last_fb)
-	{
-		tud_audio_fb_set(value);
-		fb.last_fb = value;
-		fb.force_send = false;
-	}
+// 16.16 samples per 1 ms frame
+const uint32_t value = (uint32_t)((double)rate_hz * 65.536 + 0.5);
+if (fb.force_send || value != fb.last_fb)
+{
+    tud_audio_fb_set(value);
+    fb.last_fb = value;
+    fb.force_send = false;
+}
 }
 
 static void service_host_rate(void)
 {
-	const uint32_t now = time_us_32();
-	if (stats.state == USB_AUDIO_IDLE)
-	{
-		host_rate_hz = 0;
-		host_win_t0_us = now;
-		host_win_frames0 = rx_frames_counter;
-		return;
-	}
+    const uint32_t now = time_us_32();
 
-	const uint32_t dt = now - host_win_t0_us;
-	if (dt < HOST_RATE_UPDATE_US)
-		return;
-	host_rate_hz = (uint32_t)(((uint64_t)(rx_frames_counter - host_win_frames0) * 1000000ull + dt / 2u) / dt);
-	host_win_t0_us = now;
-	host_win_frames0 = rx_frames_counter;
+    if (stats.state == USB_AUDIO_IDLE || stats.state == USB_AUDIO_SWITCHING)
+    {
+        host_rate_hz = 0;
+        pkt_per_sec = 0;
+        pkt_avg_bytes = 0;
+
+        host_win_t0_us = now;
+        host_win_frames0 = rx_frames_counter;
+
+        pkt_win_count0 = pkt_count_total;
+        pkt_win_bytes0 = pkt_bytes_total;
+
+        return;
+    }
+
+    const uint32_t dt = now - host_win_t0_us;
+
+    if (dt < HOST_RATE_UPDATE_US)
+        return;
+
+    host_rate_hz =
+        (uint32_t)(
+            ((uint64_t)(rx_frames_counter - host_win_frames0) * 1000000ull
+             + dt / 2u) / dt);
+
+    {
+        const uint32_t cnt   = pkt_count_total;
+        const uint32_t bytes = pkt_bytes_total;
+
+        const uint32_t dcnt   = cnt   - pkt_win_count0;
+        const uint32_t dbytes = bytes - pkt_win_bytes0;
+
+        pkt_per_sec =
+            (uint32_t)(((uint64_t)dcnt * 1000000ull + dt / 2u) / dt);
+
+        pkt_avg_bytes =
+            dcnt ? (dbytes + dcnt / 2u) / dcnt : 0u;
+
+        pkt_win_count0 = cnt;
+        pkt_win_bytes0 = bytes;
+    }
+
+    // MAX HF: largest |H - F| seen since STREAMING started (diagnostics)
+    if (stats.state == USB_AUDIO_STREAMING && host_rate_hz != 0u && stats.feedback_hz > 0.0f)
+    {
+        int32_t d = (int32_t)host_rate_hz - (int32_t)(stats.feedback_hz + 0.5f);
+        if (d < 0)
+            d = -d;
+        if (d > stats.max_hf_diff)
+            stats.max_hf_diff = d;
+    }
+
+    host_win_t0_us = now;
+    host_win_frames0 = rx_frames_counter;
 }
 
 //--------------------------------------------------------------------+
@@ -597,17 +844,33 @@ void usb_sound_card_init(void)
 void usb_audio_task(void)
 {
 #if USB_BRINGUP_LEVEL == 0
-	return;
+    return;
 #endif
-	tud_task();
-#if USB_BRINGUP_LEVEL == 1
-	return;
-#endif
-	service_rx();
-	service_state();
-	service_feedback();
-	service_host_rate();
 
+    // Loop-interval diagnostics: gap between two calls = everything else Core0 does in main()
+    // (SPI drawing, ...) plus the work inside this function
+    const uint32_t loop_now_us = time_us_32();
+    if (stats.state == USB_AUDIO_STREAMING && loop0_prev_us != 0)
+    {
+        const uint32_t gap_us = loop_now_us - loop0_prev_us;
+        if (gap_us > stats.loop0_max_us)
+            stats.loop0_max_us = gap_us;
+        if (gap_us > LOOP0_WARN_US)
+            stats.loop0_over_count++;
+    }
+    loop0_prev_us = loop_now_us;
+
+    tud_task();
+
+#if USB_BRINGUP_LEVEL == 1
+    return;
+#endif
+
+    service_switch();
+    service_rx();
+    service_state();
+    service_feedback();
+    service_host_rate();
 }
 
 usb_audio_state_t usb_audio_get_state(void)
@@ -620,26 +883,34 @@ const usb_audio_stats_t *usb_audio_get_stats(void)
 	return &stats;
 }
 
-//--------------------------------------------------------------------+
-// Diagnostic accessors (used by debug_gauge.c)
-//--------------------------------------------------------------------+
-// Sample rate the host really delivers [Hz] (1 s window, 0 while IDLE)
 uint32_t usb_audio_get_host_rate_hz(void)
 {
-	return host_rate_hz;
+    return host_rate_hz;
 }
 
-// Rate currently requested through the feedback endpoint [Hz] (0 while IDLE)
 uint32_t usb_audio_get_feedback_hz(void)
 {
-	return (stats.state == USB_AUDIO_IDLE) ? 0u : (uint32_t)(stats.feedback_hz + 0.5f);
+    return (stats.state == USB_AUDIO_IDLE || stats.state == USB_AUDIO_SWITCHING)
+        ? 0u
+        : (uint32_t)(stats.feedback_hz + 0.5f);
 }
 
-// Largest correction the PI controller may apply [Hz]
 uint32_t usb_audio_get_feedback_limit_hz(void)
 {
-	float lim = (float)audio_state.freq * FB_LIMIT_PPM * 1e-6f;
-	if (lim > (float)FB_ADJ_LIMIT)
-		lim = (float)FB_ADJ_LIMIT;
-	return (uint32_t)(lim + 0.5f);
+    float lim = (float)audio_state.freq * FB_LIMIT_PPM * 1e-6f;
+
+    if (lim > (float)FB_ADJ_LIMIT)
+        lim = (float)FB_ADJ_LIMIT;
+
+    return (uint32_t)(lim + 0.5f);
+}
+
+uint32_t usb_audio_get_packets_per_sec(void)
+{
+    return pkt_per_sec;
+}
+
+uint32_t usb_audio_get_avg_packet_bytes(void)
+{
+    return pkt_avg_bytes;
 }

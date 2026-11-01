@@ -19,41 +19,55 @@ file(GLOB DSP_SRC
         )
 
 # Add executable. Default name is the project name, version 0.1
-add_executable(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling
+set(USB_AUDIO_CLASS_VERSION "2" CACHE STRING "USB Audio Class version (1 or 2)")
+set_property(CACHE USB_AUDIO_CLASS_VERSION PROPERTY STRINGS 1 2)
+if(NOT USB_AUDIO_CLASS_VERSION STREQUAL "1" AND NOT USB_AUDIO_CLASS_VERSION STREQUAL "2")
+        message(FATAL_ERROR "USB_AUDIO_CLASS_VERSION must be 1 or 2")
+endif()
+
+if(USB_AUDIO_CLASS_VERSION STREQUAL "1")
+        set(USB_AUDIO_CLASS_SOURCE usb_audio_uac1.c)
+else()
+        set(USB_AUDIO_CLASS_SOURCE usb_audio_uac2.c)
+endif()
+
+add_executable(Pico2_UAC12_USBDDC_11FFT_NoOverSampling
         main.c
         general_func.c
         usb_device_control.c
-        uac2_callbacks.c 
+        ${USB_AUDIO_CLASS_SOURCE}
         usb_descriptors.c
         core1.c
         i2s_pio_interface.c
         transmit_to_dac.c
         ringbuffer.c
-        debug_with_gpio.c
         debug_gauge.c
         display_rta.c
         spectrum.c
         ${DSP_SRC}
 )
 
+set(PICO_FIRMWARE_NAME "Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC${USB_AUDIO_CLASS_VERSION}")
+set_target_properties(Pico2_UAC12_USBDDC_11FFT_NoOverSampling PROPERTIES OUTPUT_NAME "${PICO_FIRMWARE_NAME}")
+
 # UART console is unused; do not pull pico_stdio_uart/hardware_uart into the image.
-pico_enable_stdio_uart(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling 0)
+pico_enable_stdio_uart(Pico2_UAC12_USBDDC_11FFT_NoOverSampling 0)
 
 # 起動時にプログラムをSRAMへコピーして実行する（RP2350）
-pico_set_binary_type(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling copy_to_ram)
+pico_set_binary_type(Pico2_UAC12_USBDDC_11FFT_NoOverSampling copy_to_ram)
 
-pico_set_program_name(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling "Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling")
-pico_set_program_version(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling "0.1")
+pico_set_program_name(Pico2_UAC12_USBDDC_11FFT_NoOverSampling "${PICO_FIRMWARE_NAME}")
+pico_set_program_version(Pico2_UAC12_USBDDC_11FFT_NoOverSampling "0.1")
 
 # Generate PIO header
-pico_generate_pio_header(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling ${CMAKE_CURRENT_LIST_DIR}/i2s.pio)
+pico_generate_pio_header(Pico2_UAC12_USBDDC_11FFT_NoOverSampling ${CMAKE_CURRENT_LIST_DIR}/i2s.pio)
 
 # Add the standard library to the build
-target_link_libraries(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling
+target_link_libraries(Pico2_UAC12_USBDDC_11FFT_NoOverSampling
         pico_stdlib)
 
 # Add the standard include files to the build
-target_include_directories(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling PRIVATE
+target_include_directories(Pico2_UAC12_USBDDC_11FFT_NoOverSampling PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../pico-extras
         ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -61,8 +75,12 @@ target_include_directories(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling PRIVA
         ${CMAKE_CURRENT_LIST_DIR}/../CMSIS/DSP/Include
         )
 
+target_compile_definitions(Pico2_UAC12_USBDDC_11FFT_NoOverSampling PRIVATE
+        USB_AUDIO_CLASS_VERSION=${USB_AUDIO_CLASS_VERSION}
+        )
+
 # Add any user requested libraries
-target_link_libraries(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling 
+target_link_libraries(Pico2_UAC12_USBDDC_11FFT_NoOverSampling 
         hardware_pio 
         tinyusb_device
         pico_multicore
@@ -74,9 +92,9 @@ target_link_libraries(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling
         pico_unique_id
 )
 
-pico_set_float_implementation(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling pico_vfp)
+pico_set_float_implementation(Pico2_UAC12_USBDDC_11FFT_NoOverSampling pico_vfp)
 
-target_link_options(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling PRIVATE
+target_link_options(Pico2_UAC12_USBDDC_11FFT_NoOverSampling PRIVATE
         "LINKER:-u,__wrap_printf"
         "LINKER:-u,__wrap_puts"
         "LINKER:-u,__wrap_putchar"
@@ -86,4 +104,4 @@ target_link_options(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling PRIVATE
         "LINKER:-u,__wrap_log10f"
 )
 
-pico_add_extra_outputs(Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling)
+pico_add_extra_outputs(Pico2_UAC12_USBDDC_11FFT_NoOverSampling)
