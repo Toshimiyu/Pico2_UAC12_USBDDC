@@ -950,7 +950,7 @@ The verified test system was equipped with a heatsink during evaluation.
 
 MIT License
 
-Additional modifications and implementation by Toshimiyu.
+Original design, implementation and documentation by Toshimiyu
 
 ---
 
