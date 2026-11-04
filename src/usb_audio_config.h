@@ -1,0 +1,19 @@
+#ifndef USB_AUDIO_CONFIG_H_
+#define USB_AUDIO_CONFIG_H_
+
+#ifndef USB_AUDIO_CLASS_VERSION
+#define USB_AUDIO_CLASS_VERSION 2
+#endif
+
+#if USB_AUDIO_CLASS_VERSION != 1 && USB_AUDIO_CLASS_VERSION != 2
+#error "USB_AUDIO_CLASS_VERSION must be 1 or 2"
+#endif
+
+#define USB_AUDIO_PRODUCT_NAME "Pico2 UAC12 USB DDC"
+
+#define USB_CDC_EP_NOTIF 0x83
+#define USB_CDC_EP_OUT 0x02
+#define USB_CDC_EP_IN 0x82
+#define USB_CDC_STRING_INDEX 5
+
+#endif
