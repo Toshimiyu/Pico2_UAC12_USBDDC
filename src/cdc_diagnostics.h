@@ -8,8 +8,11 @@
 
 void cdc_diagnostics_init(void);
 bool cdc_diagnostics_is_connected(void);
+bool cdc_diagnostics_is_active(void);
 void cdc_diagnostics_log_anomaly(uint8_t code, const char *detail_name, uint32_t detail_value);
 void cdc_diagnostics_log_state_change(usb_audio_state_t previous_state, usb_audio_state_t state, bool session_start);
+void cdc_diagnostics_record_lcd_time(uint32_t duration_us);
+void cdc_diagnostics_record_fft_time(uint32_t duration_us);
 void cdc_diagnostics_task(void);
 
 #endif

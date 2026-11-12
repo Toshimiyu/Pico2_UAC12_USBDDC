@@ -64,5 +64,6 @@ void display_rta_reset_levels(void);
 void display_rta_set_peak(
     uint8_t l_peak,
     uint8_t r_peak);
+uint32_t display_rta_buffer_bytes(void);
 
 #endif // DISPLAY_RTA_H

@@ -106,7 +106,8 @@ extern "C" {
 #define CFG_TUD_AUDIO_ENABLE_FEEDBACK_EP                1
 
 #define CFG_TUD_CDC_RX_BUFSIZE                          256
-#define CFG_TUD_CDC_TX_BUFSIZE                          512
+// Buffer diagnostic rows during temporary host-side CDC read stalls.
+#define CFG_TUD_CDC_TX_BUFSIZE                          32768
 #define CFG_TUD_CDC_RX_EPSIZE                           64
 #define CFG_TUD_CDC_TX_EPSIZE                           64
 

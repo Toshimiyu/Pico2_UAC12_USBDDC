@@ -22,5 +22,6 @@ void spectrum_feed_block(const float *left_q31, const float *right_q31, uint32_t
 // before _left() will accept another frame. _right() returns false if no frame is in progress.
 bool spectrum_process_left(uint8_t left[SPECTRUM_BAND_COUNT]);
 bool spectrum_process_right(uint8_t right[SPECTRUM_BAND_COUNT]);
+uint32_t spectrum_static_ram_bytes(void);
 
 #endif

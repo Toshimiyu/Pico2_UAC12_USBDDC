@@ -67,6 +67,8 @@ void dma_diag_reset(void)
     dma_diag.level_max = 0;
     dma_diag.loop_max_us = 0;
     dma_diag.loop_over_count = 0;
+    for (uint8_t i = 0; i < 4; ++i)
+        dma_diag.loop_hist[i] = 0;
 }
 
 void dma_diag_reset_counters(void)
@@ -351,6 +353,9 @@ void __not_in_flash_func(dma_tx_start)(void)
             dma_diag.loop_max_us = gap_us;
         if (gap_us > LOOP1_WARN_US)
             dma_diag.loop_over_count++;
+        const uint8_t hist_bin = gap_us < 1000u ? 0u :
+            (gap_us < 2000u ? 1u : (gap_us < 5000u ? 2u : 3u));
+        dma_diag.loop_hist[hist_bin]++;
     }
     dma_diag.loop_prev_us = dma_diag.armed ? loop_now_us : 0;
 

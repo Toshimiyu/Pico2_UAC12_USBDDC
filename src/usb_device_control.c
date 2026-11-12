@@ -367,6 +367,10 @@ bool tud_audio_rx_done_isr(
         if (previous_us != 0u)
         {
             const uint32_t gap_us = now_us - previous_us;
+            if (gap_us > stats.usb_out_gap_max_us)
+            {
+                stats.usb_out_gap_max_us = gap_us;
+            }
             if (gap_us >= USB_OUT_GAP_WARN_US &&
                 (!rx_packet_gap_pending || gap_us > rx_packet_gap_pending_us))
             {
@@ -498,8 +502,12 @@ static void level_stats_reset(void)
 	stats.level_min = INT32_MAX;
 	stats.level_max = 0;
 	stats.max_hf_diff = 0;
+	stats.usb_out_gap_max_us = 0;
+	rx_packet_last_us = 0;
 	stats.loop0_max_us = 0;
 	stats.loop0_over_count = 0;
+	for (uint8_t i = 0; i < 4; ++i)
+		stats.loop0_hist[i] = 0;
 	loop0_prev_us = 0; // the next pass only sets the baseline
 	dma_diag_reset();
 	stats.win_avg = stats.win_min = stats.win_max = 0;
@@ -1423,6 +1431,9 @@ void usb_audio_task(void)
             stats.loop0_max_us = gap_us;
         if (gap_us > LOOP0_WARN_US)
             stats.loop0_over_count++;
+        const uint8_t hist_bin = gap_us < 1000u ? 0u :
+            (gap_us < 2000u ? 1u : (gap_us < 5000u ? 2u : 3u));
+        stats.loop0_hist[hist_bin]++;
     }
     loop0_prev_us = diagnostics_enabled ? loop_now_us : 0;
 

@@ -61,6 +61,23 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 ## Change History
 
+### V1.9
+
+#### USB Reception and Diagnostics
+
+- Add maximum USB OUT receive gap, ring-buffer headroom, and underrun count to the 100 ms CDC summary
+- Add a 1 ms sampled ring-water average and report static RAM, ring, FFT, and LCD buffer memory figures in CDC metadata
+- Record Core0/Core1 loop-interval distributions and stream start/stop and rate-change counts
+- `USB_GAP_MAX_US` is the maximum interval between USB OUT receive callbacks while streaming, not a Windows-only delay measurement
+- LCD draw-operation and per-channel FFT times are reported as 100 ms maximum/average values; loop distributions accumulate during streaming
+- Expand the CDC transmit FIFO to 32 KiB to reduce log loss during temporary PC read stalls
+- Add columns to periodic CDC rows; existing CSV analysis tools need to be updated for the new header
+
+#### Display and Load
+
+- Limit spectrum rendering to 30 FPS and make peak-marker fall speed time-based
+- Complete bar decay after input changes stop and reduce blocking SPI drawing frequency without changing ring capacity
+
 ### V1.8
 
 #### USB Reception and Diagnostics
@@ -311,7 +328,13 @@ USB event logging starts at boot, and the latest 64 events remain available on t
 
 #### USB CDC Diagnostic Log
 
-The diagnostic virtual COM port is controlled by the CMake option `USB_BRINGUP_LEVEL`. Level `3` enables the CDC class, interface, endpoints, and diagnostic log output; levels `0`, `1`, and `2` disable CDC, so no virtual COM port is enumerated and no CDC communication occurs. Open the device's virtual COM port on the PC to receive CSV logs with elapsed milliseconds since CDC connection. The first metadata row records firmware version, prefill threshold, and UAC mode. A normal row is emitted every 100 ms with columns `MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE`. `USB_MODE` is `UAC1` or `UAC2` according to the build configuration. `HOST_RATE` is estimated from received frames over a 250 ms window. `HF_DIFF_NOW` is the signed `HOST_RATE - FEEDBACK_RATE` when both rates are valid; it is blank if either rate is zero (not yet measured or unavailable). `MAX_HF_DIFF_SESSION` is the maximum absolute difference during the CDC session; `MAX_HF_DIFF_STREAM` is the maximum during the current STREAMING period. `RING_MIN`/`RING_MAX` are ring levels observed during each logging interval. State transitions use `STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE` rows; anomalies use `ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`, including state, sample rate, ring fill, and frames in the DMA pool. Transition events are recorded on Core0 when the state changes, giving finer timing than periodic samples. The device does not generate calendar time; add it in the PC measurement software if needed. Periodic diagnostic statistics are collected even when the Diagnostics screen is not open while CDC is connected.
+The diagnostic virtual COM port is controlled by the CMake option `USB_BRINGUP_LEVEL`. Level `3` enables the CDC class, interface, endpoints, and diagnostic log output; levels `0`, `1`, and `2` disable CDC, so no virtual COM port is enumerated and no CDC communication occurs. Open the device's virtual COM port on the PC to receive CSV logs with elapsed milliseconds since CDC connection. Metadata records the firmware version, prefill threshold, UAC mode, and a `#MEM` row with the `.data`-to-`.bss` static RAM span, ring allocation size, mutable FFT static data size, and LCD work-buffer size. `FFT_STATIC_BYTES` and `LCD_BUFFER_BYTES` are included in `SRAM_DATA_BSS_BYTES`, not additional amounts; LCD work buffers exclude flash-resident fonts. The ring is heap-allocated and reported separately. Free heap and stack usage are not measured.
+
+A normal row is emitted every 100 ms with columns `MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS`. `USB_MODE` is `UAC1` or `UAC2` according to the build configuration. `HOST_RATE` is estimated from received frames over a 250 ms window. `HF_DIFF_NOW` is the signed `HOST_RATE - FEEDBACK_RATE` when both rates are valid; it is blank if either rate is zero (not yet measured or unavailable). `MAX_HF_DIFF_SESSION` is the maximum absolute difference during the CDC session; `MAX_HF_DIFF_STREAM` is the maximum during the current STREAMING period. `RING_MIN`/`RING_MAX` are the minimum/maximum ring levels observed during each log interval; `RING_AVG` is the mean of samples taken at approximately 1 ms intervals. State transitions use `STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE` rows; anomalies use `ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`, including state, sample rate, ring fill, and frames in the DMA pool. Transition events are recorded on Core0 when the state changes, giving finer timing than periodic samples. The device does not generate calendar time; add it in the PC measurement software if needed. Periodic diagnostic statistics are collected even when the Diagnostics screen is not open while CDC is connected.
+
+Despite their names, `USBBUF_CAPACITY` and `USBBUF_FREE_*` describe audio ring capacity and free space, not the TinyUSB receive FIFO.
+
+The 32 KiB CDC transmit FIFO retains logs during temporary PC read stalls. If the FIFO runs out of space during a longer stall, periodic rows are dropped and reported as `LOG_ROWS_DROPPED` when transmission resumes. Ring, LCD, and FFT statistics in the next periodic row accumulate since the last successfully queued periodic row. Unsent FIFO data is discarded when CDC disconnects. This FIFO uses RAM only in CDC-enabled builds and is separate from the audio buffer.
 
 USB startup levels are `0` (USB off), `1` (TinyUSB initialization only, no CDC), `2` (full operation, no CDC), and `3` (full operation with CDC diagnostic logging). The default is `2`. Specify `-DUSB_BRINGUP_LEVEL=3` only when diagnostic logging is needed. If an existing CMake cache still contains `3`, pass `-DUSB_BRINGUP_LEVEL=2` or clear the cache before reconfiguring.
 

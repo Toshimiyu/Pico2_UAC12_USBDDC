@@ -10,6 +10,7 @@
 #include "common.h"
 #include "usb_audio_config.h"
 #include "transmit_to_dac.h"
+#include "cdc_diagnostics.h"
 #include "ringbuffer.h"
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
@@ -40,8 +41,9 @@
 // ===================================================
 #define PEAK_HOLD_US      300000u
 #define DIAGNOSTICS_RESET_HOLD_US 3000000u
-#define PEAK_FALL_SPEED   4     // Peak marker fall distance every 50 ms (shared by FFT and L/R meters).
-#define METER_PEAK_FALL_SPEED PEAK_FALL_SPEED
+#define PEAK_FALL_PIXELS_PER_SEC 120u
+#define PEAK_FALL_PIXEL_INTERVAL_US (1000000u / PEAK_FALL_PIXELS_PER_SEC)
+#define RTA_FRAME_INTERVAL_US 33334u
 #define RTA_BAR_RELEASE_PIXELS_PER_SEC 100u // Bar fall speed (drops the full height in about one second).
 #define PEAK_NONE_Y       0xFFFF// Invalid value indicating that the peak is hidden.
 
@@ -237,6 +239,8 @@ extern volatile bool audio_data_seen;
 static volatile bool display_dirty = false;
 static bool render_pending = false;
 static uint8_t render_step = 0;
+static uint32_t last_render_frame_us = 0;
+static bool render_frame_clock_started = false;
 #define FORMAT_TEXT_CHARS 18
 static char format_render_text[FORMAT_TEXT_CHARS + 1];
 static uint8_t format_render_pos = 0;
@@ -354,6 +358,10 @@ lcd_write_cmd(0x2C); // Memory Write
 }
 
 static void lcd_fill_color(uint16_t color) {
+#if USB_CDC_ENABLED
+const bool measure_lcd = cdc_diagnostics_is_active();
+const uint32_t start_us = measure_lcd ? time_us_32() : 0u;
+#endif
 lcd_set_window(0, 0, 319, 239);
 gpio_put(LCD_DC_PIN, 1);
 gpio_put(LCD_CS_PIN, 0);
@@ -362,6 +370,10 @@ for (int i = 0; i < 320 * 240; i++) {
 spi_write_blocking(spi0, data, 2);
 }
 gpio_put(LCD_CS_PIN, 1);
+#if USB_CDC_ENABLED
+if (measure_lcd)
+cdc_diagnostics_record_lcd_time(time_us_32() - start_us);
+#endif
 }
 
 static void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
@@ -374,6 +386,10 @@ page_draw_enqueue_fill(x, y, w, h, color);
 return;
 }
 
+#if USB_CDC_ENABLED
+const bool measure_lcd = cdc_diagnostics_is_active();
+const uint32_t start_us = measure_lcd ? time_us_32() : 0u;
+#endif
 lcd_set_window(x, y, x + w - 1, y + h - 1);
 gpio_put(LCD_DC_PIN, 1);
 gpio_put(LCD_CS_PIN, 0);
@@ -392,6 +408,10 @@ spi_write_blocking(spi0, lcd_fill_chunk, chunk);
 remaining -= chunk;
 }
 gpio_put(LCD_CS_PIN, 1);
+#if USB_CDC_ENABLED
+if (measure_lcd)
+cdc_diagnostics_record_lcd_time(time_us_32() - start_us);
+#endif
 }
 
 static void lcd_draw_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
@@ -427,6 +447,10 @@ page_draw_ops[page_draw_count++] = (page_draw_op_t){
 return;
 }
 
+#if USB_CDC_ENABLED
+const bool measure_lcd = cdc_diagnostics_is_active();
+const uint32_t start_us = measure_lcd ? time_us_32() : 0u;
+#endif
 lcd_set_window(x, y, x + width - 1, y + height - 1);
 gpio_put(LCD_DC_PIN, 1);
 gpio_put(LCD_CS_PIN, 0);
@@ -449,6 +473,10 @@ buf[buf_idx++] = low;
 
 spi_write_blocking(spi0, buf, buf_idx);
 gpio_put(LCD_CS_PIN, 1);
+#if USB_CDC_ENABLED
+if (measure_lcd)
+cdc_diagnostics_record_lcd_time(time_us_32() - start_us);
+#endif
 }
 
 static void lcd_draw_char_scaled(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg,
@@ -609,12 +637,18 @@ if (new_w >= *peak_width && new_w > 0) {
 *hold_until = now + PEAK_HOLD_US;
 *next_fall = *hold_until;
 } else if (*peak_width > new_w &&
-(int32_t)(now - *hold_until) >= 0 &&
-(int32_t)(now - *next_fall) >= 0) {
-*peak_width = (*peak_width > METER_PEAK_FALL_SPEED)
-? (uint16_t)(*peak_width - METER_PEAK_FALL_SPEED) : 0;
-if (*peak_width < new_w) *peak_width = new_w;
-*next_fall = now + 25000u;
+(int32_t)(now - *hold_until) >= 0) {
+const uint32_t elapsed_us = now - *next_fall;
+if ((int32_t)elapsed_us >= 0) {
+    const uint32_t fall_pixels = elapsed_us / PEAK_FALL_PIXEL_INTERVAL_US;
+    if (fall_pixels > 0) {
+        *peak_width = fall_pixels >= *peak_width
+            ? 0
+            : (uint16_t)(*peak_width - fall_pixels);
+        if (*peak_width < new_w) *peak_width = new_w;
+        *next_fall += fall_pixels * PEAK_FALL_PIXEL_INTERVAL_US;
+    }
+}
 }
 
 const uint16_t desired_marker = (*peak_width > 0)
@@ -675,15 +709,17 @@ if (target_h >= *peak_dot && target_h > 0) {
 *peak_dot = target_h;
 *hold_until = now + PEAK_HOLD_US;
 *next_fall = *hold_until;
-} else if (*peak_dot > 0 &&
-(int32_t)(now - *hold_until) >= 0 &&
-(int32_t)(now - *next_fall) >= 0) {
-if (*peak_dot > PEAK_FALL_SPEED) {
-*peak_dot -= PEAK_FALL_SPEED;
-} else {
-*peak_dot = 0;
+} else if (*peak_dot > 0 && (int32_t)(now - *hold_until) >= 0) {
+const uint32_t elapsed_us = now - *next_fall;
+if ((int32_t)elapsed_us >= 0) {
+    const uint32_t fall_pixels = elapsed_us / PEAK_FALL_PIXEL_INTERVAL_US;
+    if (fall_pixels > 0) {
+        *peak_dot = fall_pixels >= *peak_dot
+            ? 0
+            : (uint8_t)(*peak_dot - fall_pixels);
+        *next_fall += fall_pixels * PEAK_FALL_PIXEL_INTERVAL_US;
+    }
 }
-*next_fall = now + 25000u;
 }
 if (*peak_dot < target_h) *peak_dot = target_h;
 
@@ -1012,12 +1048,20 @@ bool display_rta_page_service(void)
             }
 
             memset(lcd_fill_chunk, 0, sizeof(lcd_fill_chunk));
+#if USB_CDC_ENABLED
+            const bool measure_lcd = cdc_diagnostics_is_active();
+            const uint32_t lcd_start_us = measure_lcd ? time_us_32() : 0u;
+#endif
             lcd_set_window(0, page_clear_row, 319, page_clear_row);
             gpio_put(LCD_DC_PIN, 1);
             gpio_put(LCD_CS_PIN, 0);
             spi_write_blocking(spi0, lcd_fill_chunk, sizeof(lcd_fill_chunk));
             spi_write_blocking(spi0, lcd_fill_chunk, 128);
             gpio_put(LCD_CS_PIN, 1);
+#if USB_CDC_ENABLED
+            if (measure_lcd)
+            cdc_diagnostics_record_lcd_time(time_us_32() - lcd_start_us);
+#endif
             page_clear_row++;
             if (page_clear_row < 240)
             {
@@ -1180,18 +1224,29 @@ static bool peak_decay_due(void) {
 const uint32_t now = time_us_32();
 if ((peak_l_meter_width > prev_l_meter_width &&
 (int32_t)(now - peak_l_meter_hold_until) >= 0 &&
-(int32_t)(now - peak_l_meter_next_fall) >= 0) ||
+(int32_t)(now - peak_l_meter_next_fall) >= (int32_t)PEAK_FALL_PIXEL_INTERVAL_US) ||
 (peak_r_meter_width > prev_r_meter_width &&
 (int32_t)(now - peak_r_meter_hold_until) >= 0 &&
-(int32_t)(now - peak_r_meter_next_fall) >= 0))
+(int32_t)(now - peak_r_meter_next_fall) >= (int32_t)PEAK_FALL_PIXEL_INTERVAL_US))
 return true;
 for (uint8_t i = 0; i < SPECTRUM_BAND_COUNT; ++i) {
 if ((peak_l_dots[i] > 0 &&
 (int32_t)(now - peak_l_hold_until[i]) >= 0 &&
-(int32_t)(now - peak_l_next_fall[i]) >= 0) ||
+(int32_t)(now - peak_l_next_fall[i]) >= (int32_t)PEAK_FALL_PIXEL_INTERVAL_US) ||
 (peak_r_dots[i] > 0 &&
 (int32_t)(now - peak_r_hold_until[i]) >= 0 &&
-(int32_t)(now - peak_r_next_fall[i]) >= 0))
+(int32_t)(now - peak_r_next_fall[i]) >= (int32_t)PEAK_FALL_PIXEL_INTERVAL_US))
+return true;
+}
+for (uint8_t i = 0; i < SPECTRUM_BAND_COUNT; ++i) {
+const uint16_t left_target = ((uint16_t)input_l_bands[i] * 98u) / 100u;
+const uint16_t right_target = ((uint16_t)input_r_bands[i] * 98u) / 100u;
+if ((prev_l_bands[i] > left_target &&
+     (uint64_t)(uint32_t)(now - bar_last_update_us[0][i]) *
+             RTA_BAR_RELEASE_PIXELS_PER_SEC >= 1000000u) ||
+    (prev_r_bands[i] > right_target &&
+     (uint64_t)(uint32_t)(now - bar_last_update_us[1][i]) *
+             RTA_BAR_RELEASE_PIXELS_PER_SEC >= 1000000u))
 return true;
 }
 return false;
@@ -1219,8 +1274,16 @@ return;
 
 if (!audio_slack) return;
 
-if (!display_dirty && !reset_peak_dots_pending && !render_pending && !peak_decay_due()) return;
-if (!render_pending) display_dirty = false;
+if (!render_pending) {
+if (!display_dirty && !reset_peak_dots_pending && !peak_decay_due()) return;
+const uint32_t now = time_us_32();
+if (render_frame_clock_started &&
+    (uint32_t)(now - last_render_frame_us) < RTA_FRAME_INTERVAL_US)
+return;
+last_render_frame_us = now;
+render_frame_clock_started = true;
+display_dirty = false;
+}
 display_rta_update();
 }
 
@@ -1283,4 +1346,16 @@ update_vertical_bar(rx, cur_r_bands[band], &prev_r_bands[band],
 }
 if (++render_step >= (2 * SPECTRUM_BAND_COUNT) + 2)
 render_pending = false;
+}
+
+uint32_t display_rta_buffer_bytes(void)
+{
+return (uint32_t)(
+    sizeof(cur_l_bands) + sizeof(cur_r_bands) + sizeof(spectrum_l) +
+    sizeof(input_l_bands) + sizeof(input_r_bands) + sizeof(prev_l_bands) +
+    sizeof(prev_r_bands) + sizeof(bar_last_update_us) + sizeof(peak_l_dots) +
+    sizeof(peak_r_dots) + sizeof(peak_l_hold_until) + sizeof(peak_r_hold_until) +
+    sizeof(peak_l_next_fall) + sizeof(peak_r_next_fall) + sizeof(last_l_peak_y) +
+    sizeof(last_r_peak_y) + sizeof(format_render_text) + sizeof(lcd_fill_chunk) +
+    sizeof(page_draw_ops));
 }

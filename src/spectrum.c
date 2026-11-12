@@ -395,3 +395,19 @@ state[index] = BUFFER_FREE;
 processing_index = -1;
 return true;
 }
+
+uint32_t spectrum_static_ram_bytes(void)
+{
+return (uint32_t)(
+    sizeof(capture) + sizeof(state) + sizeof(ready_index) + sizeof(fill_index) +
+    sizeof(capture_pos) + sizeof(window) + sizeof(fft_input) + sizeof(fft_output) +
+    sizeof(low_goertzel_coeff) + sizeof(low_goertzel_gain) + sizeof(low_goertzel_band) +
+    sizeof(low_goertzel_q1) + sizeof(low_goertzel_q2) + sizeof(low_goertzel_levels) +
+    sizeof(low_goertzel_window) + sizeof(low_goertzel_pos) + sizeof(low_goertzel_window_len) +
+    sizeof(low_goertzel_window_stride) + sizeof(low_goertzel_bin_count) +
+    sizeof(low_goertzel_enabled) + sizeof(bin_gain) + sizeof(bin_band) +
+    sizeof(first_bin) + sizeof(last_bin) + sizeof(fb_bin) + sizeof(fb_gain) +
+    sizeof(power_to_level_lut) + sizeof(hann_sum) + sizeof(fft) + sizeof(initialized) +
+    sizeof(discard_next_frame) + sizeof(processing_index) + sizeof(processing_rate) +
+    sizeof(active_rate_index));
+}

@@ -51,6 +51,7 @@ typedef struct
     volatile uint32_t loop_prev_us;      // Core1 private: time of the previous dma_tx_start() call
     volatile uint32_t loop_max_us;       // longest gap between two dma_tx_start() calls while armed
     volatile uint32_t loop_over_count;   // gaps longer than LOOP1_WARN_US while armed
+    volatile uint32_t loop_hist[4];      // loop gaps: <1ms, <2ms, <5ms, >=5ms
     volatile uint32_t tail_block_count;  // a lone last block waited with an empty Ring (see DMA_START_TAIL_BLOCK)
 } DMA_DIAG;
 extern DMA_DIAG dma_diag;

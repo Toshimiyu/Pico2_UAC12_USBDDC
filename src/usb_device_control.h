@@ -53,6 +53,7 @@ typedef struct
 	volatile int32_t ring_pool_now;		   // Ring level + frames queued in the DMA pool [frames] (upper bound)
 	volatile int32_t max_hf_diff;		   // max |host rate H - feedback rate F| [Hz] since STREAMING started
 	volatile uint32_t output_stop_count;   // underruns: Core1 output stopped because Ring and pool ran dry while STREAMING
+	volatile uint32_t usb_out_gap_max_us;  // longest interval between received USB OUT packets while STREAMING
 	volatile uint32_t switch_count;		   // completed sample-rate changes
 	volatile uint32_t switch_timeout_count; // switches whose drain hit SWITCH_DRAIN_TIMEOUT_US and was forced
 	volatile uint32_t switch_drain_us;	   // drain time of the last switch [us]
@@ -75,6 +76,7 @@ typedef struct
 	// ---- Loop intervals while STREAMING (since STREAMING started) ----
 	volatile uint32_t loop0_max_us;		   // Core0: longest gap between two usb_audio_task() calls (SPI drawing, FFT feed, ...)
 	volatile uint32_t loop0_over_count;	   // Core0: gaps longer than LOOP0_WARN_US
+	volatile uint32_t loop0_hist[4];        // Core0 loop gaps: <1ms, <2ms, <5ms, >=5ms
 	volatile uint32_t loop1_max_us;		   // Core1: longest gap between two dma_tx_start() calls (FFT runs in this loop)
 	volatile uint32_t loop1_over_count;	   // Core1: gaps longer than LOOP1_WARN_US
 	volatile uint32_t tail_block_count;	   // a lone last DMA block was found waiting with an empty Ring (see DMA_START_TAIL_BLOCK)

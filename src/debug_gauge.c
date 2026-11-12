@@ -11,6 +11,7 @@
  */
 
 #include "debug_gauge.h"
+#include "cdc_diagnostics.h"
 
 #if DEBUG_GAUGE_ENABLE
 
@@ -237,6 +238,10 @@ static void lcd_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t co
 	if (y + h > 240)
 		h = 240 - y;
 
+#if USB_CDC_ENABLED
+	const bool measure_lcd = cdc_diagnostics_is_active();
+	const uint32_t start_us = measure_lcd ? time_us_32() : 0u;
+#endif
 	for (uint32_t i = 0; i < sizeof(fill_chunk); i += 2)
 	{
 		fill_chunk[i] = (uint8_t)(color >> 8);
@@ -253,10 +258,18 @@ static void lcd_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t co
 		remaining -= n;
 	}
 	gpio_put(LCD_CS_PIN, 1);
+#if USB_CDC_ENABLED
+	if (measure_lcd)
+	cdc_diagnostics_record_lcd_time(time_us_32() - start_us);
+#endif
 }
 
 static void lcd_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg)
 {
+#if USB_CDC_ENABLED
+	const bool measure_lcd = cdc_diagnostics_is_active();
+	const uint32_t start_us = measure_lcd ? time_us_32() : 0u;
+#endif
 	if (c < ' ' || c > '~')
 		c = ' ';
 	const uint8_t *glyph = gauge_font8x8[c - ' '];
@@ -274,6 +287,10 @@ static void lcd_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg)
 	gpio_put(LCD_CS_PIN, 0);
 	spi_write_blocking(spi0, buf, sizeof(buf));
 	gpio_put(LCD_CS_PIN, 1);
+#if USB_CDC_ENABLED
+	if (measure_lcd)
+	cdc_diagnostics_record_lcd_time(time_us_32() - start_us);
+#endif
 }
 
 // ---- One-operation-per-call queue ----------------------------------------------------------------------
@@ -1006,6 +1023,15 @@ void debug_gauge_service(void)
 		lcd_char(op.x, op.y, op.c, op.fg, op.bg);
 	else
 		lcd_rect(op.x, op.y, op.w, op.h, op.fg);
+}
+
+uint32_t debug_gauge_buffer_bytes(void)
+{
+	return (uint32_t)(
+		sizeof(fill_chunk) + sizeof(queue) + sizeof(shown_pct) + sizeof(shown_host) +
+		sizeof(shown_fb) + sizeof(shown_size) + sizeof(shown_pkt) + sizeof(shown_state) +
+		sizeof(shown_format) + sizeof(shown_diag) + sizeof(shown_diag_color) +
+		sizeof(shown_log) + sizeof(shown_log_color));
 }
 
 #endif /* DEBUG_GAUGE_ENABLE */

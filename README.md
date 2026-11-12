@@ -55,6 +55,23 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 
 ## 変更履歴
 
+### V1.9
+
+#### USB受信・診断
+
+- CDCの100msサマリーにUSB OUT受信間隔の最大値、リングの残量、UNDERFLOW回数を追加
+- CDCログに1msサンプリングによるリング平均水位と、静的RAM・リング・FFT・LCDバッファーのメモリ内訳を追加
+- Core0/Core1ループ間隔の分布と、ストリーム開始・停止／レート変更回数を記録
+- `USB_GAP_MAX_US`はSTREAMING中のUSB OUT受信コール間隔の最大値（Windows側だけの遅延を示す値ではありません）
+- LCD描画操作ごと／FFTチャンネル処理ごとの時間は100msごとの最大・平均値、ループ分布はストリーム中の累積値として記録
+- CDC送信FIFOを32 KiBに拡張し、PC側の一時的な読み取り停滞によるログ欠落を軽減
+- CDCの通常行に列を追加したため、既存のCSV解析ツールはヘッダーに合わせた更新が必要
+
+#### 表示・負荷
+
+- スペクトラム描画を最大30fpsに制限し、ピーク表示の落下速度を経過時間基準に変更
+- 入力変化が止まった後もバーの減衰を完了するようにし、ブロッキングSPI描画の頻度を抑制（リング容量は変更なし）
+
 ### V1.8
 
 #### USB受信・診断
@@ -296,7 +313,13 @@ USBイベントログは起動時から記録され、診断画面では起動�
 
 起動レベルは`0`（USB無効）、`1`（TinyUSB初期化のみ・CDCなし）、`2`（通常動作・CDCなし）、`3`（通常動作・CDC診断ログあり）です。既定値は`2`です。診断ログが必要な場合だけ、`-DUSB_BRINGUP_LEVEL=3`を指定してください。既存のCMakeキャッシュに`3`が保存されている場合は、`-DUSB_BRINGUP_LEVEL=2`を指定するか、CMakeキャッシュを削除して再構成してください。
 
-CDC出力を有効にしてPCで本機の仮想COMポートを開くと、CDC接続からの経過時間をミリ秒で記録したCSVログを出力します。最初のメタデータ行にはファームウェア版、プリフィル値、UACモードを記録します。通常行は100ms間隔で、`MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE`の順です。`USB_MODE`はビルド構成に応じた`UAC1`または`UAC2`です。`HOST_RATE`は受信フレーム数から求める250ms窓の推定値です。`HF_DIFF_NOW`は両レートが有効な場合の符号付き`HOST_RATE - FEEDBACK_RATE`で、どちらかが0（未計測または無効）の場合は空欄です。`MAX_HF_DIFF_SESSION`はCDCログセッション中の最大絶対差、`MAX_HF_DIFF_STREAM`は現在のSTREAMING期間中の最大絶対差です。`RING_MIN`/`RING_MAX`は各ログ間隔で観測したリング水位です。状態遷移は`STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE`、異常は`ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`形式で記録し、遷移・異常時の状態と水位も残します。状態遷移イベントは状態を更新したCore0で記録するため、周期サンプルより高い時間分解能で遷移時刻を比較できます。日時はデバイスで生成しないため、必要な場合はPC側の測定ソフトで付加してください。CDC接続中は、診断画面を開いていなくても周期的な診断統計を収集します。
+CDC出力を有効にしてPCで本機の仮想COMポートを開くと、CDC接続からの経過時間をミリ秒で記録したCSVログを出力します。メタデータにはファームウェア版、プリフィル値、UACモードのほか、`#MEM`行で`.data`開始から`.bss`終端までの静的RAMサイズ、リング割り当てサイズ、FFT静的データサイズ、LCD作業バッファーサイズを記録します。`FFT_STATIC_BYTES`と`LCD_BUFFER_BYTES`は`SRAM_DATA_BSS_BYTES`に含まれる内訳であり、加算する値ではありません。LCD値は描画キュー／作業バッファーを対象とし、Flash上のフォントは含みません。リングはヒープに確保するため別途記録します。ヒープ空き容量とスタック使用量は計測しません。
+
+通常行は100ms間隔で、`MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS`の順です。`USB_MODE`はビルド構成に応じた`UAC1`または`UAC2`です。`HOST_RATE`は受信フレーム数から求める250ms窓の推定値です。`HF_DIFF_NOW`は両レートが有効な場合の符号付き`HOST_RATE - FEEDBACK_RATE`で、どちらかが0（未計測または無効）の場合は空欄です。`MAX_HF_DIFF_SESSION`はCDCログセッション中の最大絶対差、`MAX_HF_DIFF_STREAM`は現在のSTREAMING期間中の最大絶対差です。`RING_MIN`/`RING_MAX`は各ログ間隔で観測した最小・最大水位、`RING_AVG`は約1ms間隔でサンプリングした平均水位です。状態遷移は`STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE`、異常は`ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`形式で記録し、遷移・異常時の状態と水位も残します。状態遷移イベントは状態を更新したCore0で記録するため、周期サンプルより高い時間分解能で遷移時刻を比較できます。日時はデバイスで生成しないため、必要な場合はPC側の測定ソフトで付加してください。CDC接続中は、診断画面を開いていなくても周期的な診断統計を収集します。
+
+`USBBUF_CAPACITY`と`USBBUF_FREE_*`は名前にかかわらず音声リングバッファーの容量と空きであり、TinyUSBの受信FIFO容量・空きではありません。
+
+CDC送信FIFOは32 KiBで、PC側の一時的な読み取り停滞中もログを保持します。停滞が長引いてFIFOが不足すると周期行は破棄され、送信再開後に`LOG_ROWS_DROPPED`で件数を報告します。次の周期行のリング・LCD・FFT統計は、最後に出力できた周期行からの累積です。CDC切断時は送信FIFO内の未送信データを破棄します。このFIFOはCDC有効ビルドでのみRAMを使用し、音声バッファーとは別です。
 
 通常再生の開始・再バッファリング時は、サンプルレートに応じた約6ms分をリングに蓄積してから出力します。蓄積中は新たなリングデータをDMAへ渡しませんが、既にDMAへ渡したデータは排出します。CSVメタデータの`PREFILL_MS`はこの蓄積時間です。既存のCMake設定`USB_AUDIO_PREFILL_FRAMES`（CSVの`PREFILL_FRAMES`）は、バッファリング以外の状態で残データの出力を開始するための従来のしきい値であり、通常再生のプリフィル量ではありません。
 
