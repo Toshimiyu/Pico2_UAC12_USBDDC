@@ -315,7 +315,7 @@ USBイベントログは起動時から記録され、診断画面では起動�
 
 CDC出力を有効にしてPCで本機の仮想COMポートを開くと、CDC接続からの経過時間をミリ秒で記録したCSVログを出力します。メタデータにはファームウェア版、プリフィル値、UACモードのほか、`#MEM`行で`.data`開始から`.bss`終端までの静的RAMサイズ、リング割り当てサイズ、FFT静的データサイズ、LCD作業バッファーサイズを記録します。`FFT_STATIC_BYTES`と`LCD_BUFFER_BYTES`は`SRAM_DATA_BSS_BYTES`に含まれる内訳であり、加算する値ではありません。LCD値は描画キュー／作業バッファーを対象とし、Flash上のフォントは含みません。リングはヒープに確保するため別途記録します。ヒープ空き容量とスタック使用量は計測しません。
 
-通常行は100ms間隔で、`MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS`の順です。`USB_MODE`はビルド構成に応じた`UAC1`または`UAC2`です。`HOST_RATE`は受信フレーム数から求める250ms窓の推定値です。`HF_DIFF_NOW`は両レートが有効な場合の符号付き`HOST_RATE - FEEDBACK_RATE`で、どちらかが0（未計測または無効）の場合は空欄です。`MAX_HF_DIFF_SESSION`はCDCログセッション中の最大絶対差、`MAX_HF_DIFF_STREAM`は現在のSTREAMING期間中の最大絶対差です。`RING_MIN`/`RING_MAX`は各ログ間隔で観測した最小・最大水位、`RING_AVG`は約1ms間隔でサンプリングした平均水位です。状態遷移は`STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE`、異常は`ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`形式で記録し、遷移・異常時の状態と水位も残します。状態遷移イベントは状態を更新したCore0で記録するため、周期サンプルより高い時間分解能で遷移時刻を比較できます。日時はデバイスで生成しないため、必要な場合はPC側の測定ソフトで付加してください。CDC接続中は、診断画面を開いていなくても周期的な診断統計を収集します。
+通常行は100ms間隔で、`MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS`の順です。`USB_MODE`はビルド構成に応じた`UAC1`または`UAC2`です。`HOST_RATE`は受信フレーム数から求める250ms窓の推定値です。`HF_DIFF_NOW`は両レートが有効な場合の符号付き`HOST_RATE - FEEDBACK_RATE`で、どちらかが0（未計測または無効）の場合は空欄です。`MAX_HF_DIFF_SESSION`はCDCログセッション中の最大絶対差、`MAX_HF_DIFF_STREAM`は現在のSTREAMING期間中の最大絶対差です。後者はSTREAMING開始後1秒間に重なる推定窓を除外し、有効な測定値が得られるまでは0です。`RING_MIN`/`RING_MAX`は各ログ間隔で観測した最小・最大水位、`RING_AVG`は約1ms間隔でサンプリングした平均水位です。状態遷移は`STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE`、異常は`ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`形式で記録し、遷移・異常時の状態と水位も残します。状態遷移イベントは状態を更新したCore0で記録するため、周期サンプルより高い時間分解能で遷移時刻を比較できます。日時はデバイスで生成しないため、必要な場合はPC側の測定ソフトで付加してください。CDC接続中は、診断画面を開いていなくても周期的な診断統計を収集します。
 
 `USBBUF_CAPACITY`と`USBBUF_FREE_*`は名前にかかわらず音声リングバッファーの容量と空きであり、TinyUSBの受信FIFO容量・空きではありません。
 
@@ -507,6 +507,20 @@ Onkyo HF Playerは仕様上UAC1モードのみ対応しています。本プロ�
 Onkyo HF Playerの独自ドライバーを使用せず、Android標準ドライバー（Foobar2000など）で使用する場合は、UAC1・UAC2の両モードで正常に動作することをSony XQ-ES44で確認しています。ただし、Onkyo HF Playerの独自ドライバーを使用した直後にAndroid標準ドライバーへ切り替える場合は、Androidに正しく認識させるため、USBコネクターを一度抜き差しして再接続してください。
 
 ※ Android 16（Sony XQ-ES44）接続時のUSBテスター実測値は、4.972 V・0.140 A（約0.696 W）です。
+
+### Androidでのプツ音の検証
+
+本プロジェクトでも同様のプツ音が発生したため、フィードバック制限値を`FB_BASE_LIMIT_PPM=50`、`FB_BOOST_MAX_PPM=500`に変更しました。以下は派生版の[Pico2_UAC12_USBDDC_Weather](https://github.com/Toshimiyu/Pico2_UAC12_USBDDC_Weather)での検証結果であり、本プロジェクトでの測定値ではありません。
+
+2026年11月13日、Sony XQ-ES44（Android 16、標準オーディオドライバー）をUAC2で使用し、48kHz / 32bitで再生した際の観察結果です。Windows 11 26H2でも48kHz / 32bitで比較しました。
+
+- AndroidのYouTubeとMusicアプリでは、不定期に短いプツ音が発生しました。水位が約50%で安定した後にも発生し、Androidの音量を変更してもプツ音の大きさは変わりませんでした。
+- Androidで無音WAVを再生した際には、プツ音は確認されませんでした。無音再生時のUSB形式は未確認です。
+- `FB_BASE_LIMIT_PPM=50`、`FB_BOOST_MAX_PPM=500`の試験設定では、Windowsで水位が約3分40秒後に49.9%となり、音切れは確認されませんでした。Android版Foobar2000では水位が約2分27秒後に50%となり、プツ音は確認されませんでした。同設定のMusicアプリではプツ音が残りました。
+- MusicアプリでDSEE UltimateをOFFにすると、プツ音の頻度はかなり下がりましたが、不定期のプツ音と一瞬音が濁るような現象は残りました。
+- 診断画面ではO/F/S/C/Uが0で、異常イベントは確認されませんでした。これは全ての音声異常がないことを保証するものではありません。
+
+フィードバック制限値を小さくすると改善する傾向がありましたが、原因は未特定です。アプリや音響効果、フィードバック制御との関係を引き続き確認する必要があります。Foobar2000の使用やDSEE Ultimateの無効化は回避策の候補です。上記設定での長時間の安定性は未確認です。補正幅を小さくしすぎると水位が漂い、音切れする可能性があります。
 
 ## USB Audio Classの選択
 

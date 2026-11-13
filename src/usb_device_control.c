@@ -60,10 +60,11 @@ volatile bool audio_data_seen = false;
 #define FB_LIMIT_PPM (3000.0f)	   // hard limit of the correction : +-0.3 % of fs (never exceeds FB_ADJ_LIMIT Hz)
 #define FB_UPDATE_PERIOD_US (1000) // one update per USB frame
 #define HOST_RATE_UPDATE_US (250000u)
-#define FB_BASE_LIMIT_PPM  (300.0f)
+#define HOST_RATE_STREAM_WARMUP_US (1000000u)
+#define FB_BASE_LIMIT_PPM  (50.0f)
 #define FB_BOOST_START_ERR (128.0f)
 #define FB_BOOST_FULL_ERR  (512.0f)
-#define FB_BOOST_MAX_PPM   (1500.0f)
+#define FB_BOOST_MAX_PPM   (500.0f)
 #define EVT_LOG_N 64
 #define AUDIO_HISTORY_N 64
 #define AUDIO_HISTORY_PRETRIGGER_N 48
@@ -317,6 +318,7 @@ static uint32_t rx_frames_counter = 0;
 static uint32_t host_win_t0_us = 0;
 static uint32_t host_win_frames0 = 0;
 static uint32_t host_rate_hz = 0;
+static uint64_t stream_start_us = 0;
 
 // ---- Packet statistics ---------------------------------------------
 
@@ -435,6 +437,9 @@ static void set_state(usb_audio_state_t s)
 
     if (previous_state != s)
     {
+        if (s == USB_AUDIO_STREAMING)
+            stream_start_us = time_us_64();
+
         usb_audio_record_event(
             'S',
             (uint8_t)previous_state,
@@ -1327,7 +1332,8 @@ if (fb.force_send || value != fb.last_fb)
 
 static void service_host_rate(void)
 {
-    const uint32_t now = time_us_32();
+    const uint64_t now_us = time_us_64();
+    const uint32_t now = (uint32_t)now_us;
 
     if (stats.state == USB_AUDIO_IDLE || stats.state == USB_AUDIO_SWITCHING)
     {
@@ -1371,8 +1377,9 @@ static void service_host_rate(void)
         pkt_win_bytes0 = bytes;
     }
 
-    // MAX HF: largest |H - F| seen since diagnostics were enabled.
+    // Exclude rate windows that overlap the first second of STREAMING.
     if (diagnostics_enabled && stats.state == USB_AUDIO_STREAMING &&
+        now_us - stream_start_us >= (uint64_t)HOST_RATE_STREAM_WARMUP_US + dt &&
         host_rate_hz != 0u && stats.feedback_hz > 0.0f)
     {
         int32_t d = (int32_t)host_rate_hz - (int32_t)(stats.feedback_hz + 0.5f);
