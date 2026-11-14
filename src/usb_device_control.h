@@ -63,7 +63,7 @@ typedef struct
 	// drop_switch / drop_clear grow by design at every rate change or (re)open.
 	volatile uint32_t rx_frames;		   // frames pulled from the TinyUSB FIFO (including the discarded ones)
 	volatile uint32_t drop_ovf_frames;	   // Ring full: frames lost (failed Ring write + discard in OVERFLOW_FATAL)
-	volatile uint32_t drop_fifo_frames;	   // TinyUSB FIFO resync flush (Core0 did not read fast enough)
+	volatile uint32_t drop_fifo_frames;	   // Old frames discarded to trim a high TinyUSB FIFO backlog
 	volatile uint32_t drop_switch_frames;  // discarded while SWITCHING (+ FIFO content flushed at completion)
 	volatile uint32_t drop_idle_frames;	   // discarded in IDLE (no stream / rate unsupported)
 	volatile uint32_t drop_clear_frames;   // Ring / DMA pool contents thrown away by a restart or forced stop, FIFO flush at open / close
@@ -79,7 +79,7 @@ typedef struct
 	volatile uint32_t loop0_hist[4];        // Core0 loop gaps: <1ms, <2ms, <5ms, >=5ms
 	volatile uint32_t loop1_max_us;		   // Core1: longest gap between two dma_tx_start() calls (FFT runs in this loop)
 	volatile uint32_t loop1_over_count;	   // Core1: gaps longer than LOOP1_WARN_US
-	volatile uint32_t tail_block_count;	   // a lone last DMA block was found waiting with an empty Ring (see DMA_START_TAIL_BLOCK)
+	volatile uint32_t tail_block_count;	   // DMA PCM blocks queued while the Ring is empty
 } usb_audio_stats_t;
 
 typedef struct

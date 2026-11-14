@@ -28,12 +28,16 @@ extern void debug_gauge_reset(void);
 extern void debug_gauge_set_reset_countdown(uint8_t seconds_remaining);
 // Call every main-loop pass while the diagnostics page is active.
 extern void debug_gauge_service(void);
+extern void startup_log_init(void);
+extern void startup_log_service(void);
 extern uint32_t debug_gauge_buffer_bytes(void);
 #else
 static inline void debug_gauge_init(void) {}
 static inline void debug_gauge_reset(void) {}
 static inline void debug_gauge_set_reset_countdown(uint8_t seconds_remaining) {(void)seconds_remaining;}
 static inline void debug_gauge_service(void) {}
+static inline void startup_log_init(void) {}
+static inline void startup_log_service(void) {}
 static inline uint32_t debug_gauge_buffer_bytes(void) { return 0u; }
 #endif
 

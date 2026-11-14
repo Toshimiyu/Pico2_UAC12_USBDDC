@@ -955,6 +955,132 @@ static bool audio_has_slack(void)
 	return !enable_output;
 }
 
+#if USB_CDC_ENABLED
+#define TRACE_DISPLAY_ROWS 12
+#define TRACE_DISPLAY_COLS 38
+static char trace_shown[TRACE_DISPLAY_ROWS + 3][TRACE_DISPLAY_COLS];
+static uint32_t trace_scroll_offset;
+static uint32_t trace_last_update_us;
+static bool trace_refresh_pending;
+
+static void trace_queue_line(uint16_t y, int row, const char *text, uint16_t color)
+{
+	const size_t length = strlen(text);
+	for (int i = 0; i < TRACE_DISPLAY_COLS; i++)
+	{
+		const char c = (size_t)i < length ? text[i] : ' ';
+		if (c != trace_shown[row][i] && q_char(8 + 8 * i, y, c, color))
+			trace_shown[row][i] = c;
+	}
+}
+
+void startup_log_init(void)
+{
+	q_head = 0;
+	q_tail = 0;
+	q_count = 0;
+	trace_scroll_offset = 0;
+	trace_last_update_us = time_us_32();
+	trace_refresh_pending = true;
+	memset(trace_shown, ' ', sizeof(trace_shown));
+	gpio_init(DISPLAY_BUTTON_A_PIN);
+	gpio_set_dir(DISPLAY_BUTTON_A_PIN, GPIO_IN);
+	gpio_pull_up(DISPLAY_BUTTON_A_PIN);
+	gpio_init(DISPLAY_BUTTON_B_PIN);
+	gpio_set_dir(DISPLAY_BUTTON_B_PIN, GPIO_IN);
+	gpio_pull_up(DISPLAY_BUTTON_B_PIN);
+	const uint32_t now = time_us_32();
+	button_a.raw_high = gpio_get(DISPLAY_BUTTON_A_PIN);
+	button_a.stable_high = button_a.raw_high;
+	button_a.raw_changed_us = now;
+	button_b.raw_high = gpio_get(DISPLAY_BUTTON_B_PIN);
+	button_b.stable_high = button_b.raw_high;
+	button_b.raw_changed_us = now;
+	queue_text_at(8, 8, "PLAYBACK START LOG", 18, C_LABEL);
+	queue_text_at(8, 58, "TIME(s)%100000 EVENT RATE RING DMA", 34, C_LABEL);
+	queue_text_at(8, 224, "A:OLD B:NEW X:NEXT", 18, C_LABEL);
+}
+
+static void startup_log_refresh(void)
+{
+	char text[TRACE_DISPLAY_COLS + 1];
+	cdc_trace_summary_t summary = {0};
+	cdc_diagnostics_get_trace_summary(&summary);
+	snprintf(text, sizeof(text), "SILENCE EVENTS: %lu", (unsigned long)summary.silence_episodes);
+	trace_queue_line(22, 0, text, C_GREEN);
+	snprintf(text, sizeof(text), "SILENCE FRAMES: %lu", (unsigned long)summary.silence_frames);
+	trace_queue_line(34, 1, text, C_GREEN);
+	snprintf(text, sizeof(text), "HISTORY OVERWRITTEN: %lu", (unsigned long)summary.history_overwritten);
+	trace_queue_line(46, 2, text, C_GREEN);
+
+	for (int row = 0; row < TRACE_DISPLAY_ROWS; row++)
+	{
+		cdc_trace_t event;
+		const uint32_t age = trace_scroll_offset + (uint32_t)row;
+		if (!cdc_diagnostics_get_trace(age, &event))
+			text[0] = '\0';
+		else
+		{
+			const unsigned long seconds = (unsigned long)((event.uptime_us / 1000000u) % 100000u);
+			const unsigned long milliseconds = (unsigned long)((event.uptime_us / 1000u) % 1000u);
+			int length;
+			if (event.kind == TRACE_STATE)
+				length = snprintf(text, sizeof(text), "%05lu.%03lu %s>%s %6lu R%04lu D%04lu",
+					seconds, milliseconds, state_text(event.from), state_text(event.to),
+					(unsigned long)event.rate, (unsigned long)event.ring, (unsigned long)event.dma_pool);
+			else
+				length = snprintf(text, sizeof(text), "%05lu.%03lu %s F%lu",
+					seconds, milliseconds,
+					event.kind == TRACE_SILENCE_START ? "SILENCE START" :
+						(event.kind == TRACE_SILENCE_RESUME ? "SILENCE PCM" : "SILENCE STOP"),
+					(unsigned long)event.silence_frames);
+			if (length < 0 || (size_t)length >= sizeof(text))
+				snprintf(text, sizeof(text), "TRACE FORMAT ERROR");
+		}
+		trace_queue_line((uint16_t)(70 + row * 12), row + 3, text, C_GREEN);
+	}
+}
+
+void startup_log_service(void)
+{
+	const uint32_t now = time_us_32();
+	const bool a_pressed = display_button_pressed(&button_a, DISPLAY_BUTTON_A_PIN, now);
+	const bool b_pressed = display_button_pressed(&button_b, DISPLAY_BUTTON_B_PIN, now);
+	if (a_pressed && !b_pressed)
+	{
+		cdc_trace_t event;
+		if (cdc_diagnostics_get_trace(trace_scroll_offset + 1u, &event))
+		{
+			trace_scroll_offset++;
+			trace_refresh_pending = true;
+		}
+	}
+	else if (b_pressed && !a_pressed && trace_scroll_offset > 0)
+	{
+		trace_scroll_offset--;
+		trace_refresh_pending = true;
+	}
+
+	if (q_count == 0 &&
+		(trace_refresh_pending || (uint32_t)(now - trace_last_update_us) >= G_UPDATE_US))
+	{
+		trace_refresh_pending = false;
+		trace_last_update_us = now;
+		startup_log_refresh();
+	}
+	if (q_count == 0 || !audio_has_slack())
+		return;
+
+	const gauge_op_t op = queue[q_head];
+	q_head = (q_head + 1) % Q_SIZE;
+	q_count--;
+	if (op.is_char)
+		lcd_char(op.x, op.y, op.c, op.fg, op.bg);
+	else
+		lcd_rect(op.x, op.y, op.w, op.h, op.fg);
+}
+#endif
+
 void debug_gauge_service(void)
 {
 	if (!inited)
@@ -1031,7 +1157,11 @@ uint32_t debug_gauge_buffer_bytes(void)
 		sizeof(fill_chunk) + sizeof(queue) + sizeof(shown_pct) + sizeof(shown_host) +
 		sizeof(shown_fb) + sizeof(shown_size) + sizeof(shown_pkt) + sizeof(shown_state) +
 		sizeof(shown_format) + sizeof(shown_diag) + sizeof(shown_diag_color) +
-		sizeof(shown_log) + sizeof(shown_log_color));
+		sizeof(shown_log) + sizeof(shown_log_color)
+#if USB_CDC_ENABLED
+		+ sizeof(trace_shown)
+#endif
+	);
 }
 
 #endif /* DEBUG_GAUGE_ENABLE */

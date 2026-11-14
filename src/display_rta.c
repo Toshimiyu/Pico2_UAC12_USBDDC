@@ -1008,7 +1008,7 @@ display_page_t display_rta_get_page(void)
 
 void display_rta_set_page(display_page_t page)
 {
-    if (page > DISPLAY_PAGE_DIAGNOSTICS || page == current_page)
+    if (page >= DISPLAY_PAGE_COUNT || page == current_page)
     {
         return;
     }
@@ -1084,7 +1084,12 @@ bool display_rta_page_service(void)
             page_draw_end_capture();
             break;
         case DISPLAY_PAGE_DIAGNOSTICS:
+#if USB_CDC_ENABLED
+        case DISPLAY_PAGE_STARTUP_LOG:
+#endif
             page_ready = true;
+            break;
+        case DISPLAY_PAGE_COUNT:
             break;
         }
         return true;
@@ -1181,7 +1186,7 @@ display_button_action_t display_rta_process_buttons(void)
 
         if (x_pressed)
         {
-            display_rta_set_page((display_page_t)((current_page + 1) % 3));
+            display_rta_set_page((display_page_t)((current_page + 1) % DISPLAY_PAGE_COUNT));
             return DISPLAY_BUTTON_ACTION_PAGE_CHANGED;
         }
         return DISPLAY_BUTTON_ACTION_NONE;
@@ -1194,7 +1199,7 @@ display_button_action_t display_rta_process_buttons(void)
     if (!x_pressed)
         return DISPLAY_BUTTON_ACTION_NONE;
 
-    const display_page_t next_page = (display_page_t)((current_page + 1) % 3);
+    const display_page_t next_page = (display_page_t)((current_page + 1) % DISPLAY_PAGE_COUNT);
     display_rta_set_page(next_page);
     return DISPLAY_BUTTON_ACTION_PAGE_CHANGED;
 }

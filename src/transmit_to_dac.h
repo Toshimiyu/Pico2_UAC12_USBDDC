@@ -39,6 +39,7 @@ extern void pwm_i2s_streaming_rate_change(void);
 extern void set_pwm_isr_1(float period_us);
 extern DMA_TX_STRUCTURE dma_tx;
 extern volatile bool enable_output;
+extern float i2s_actual_sample_rate(void);
 
 // ---- Ver1.2 diagnostics (written by Core1 in dma_tx_start(), read by Core0) ----
 typedef struct
@@ -52,7 +53,7 @@ typedef struct
     volatile uint32_t loop_max_us;       // longest gap between two dma_tx_start() calls while armed
     volatile uint32_t loop_over_count;   // gaps longer than LOOP1_WARN_US while armed
     volatile uint32_t loop_hist[4];      // loop gaps: <1ms, <2ms, <5ms, >=5ms
-    volatile uint32_t tail_block_count;  // a lone last block waited with an empty Ring (see DMA_START_TAIL_BLOCK)
+    volatile uint32_t tail_block_count;  // DMA PCM blocks queued while the Ring is empty
 } DMA_DIAG;
 extern DMA_DIAG dma_diag;
 extern void dma_diag_reset(void);        // restart MIN/MAX collection (Core0)

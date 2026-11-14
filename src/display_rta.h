@@ -11,12 +11,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "spectrum.h"
+#include "usb_audio_config.h"
 
 typedef enum
 {
 	DISPLAY_PAGE_BOOT = 0,
 	DISPLAY_PAGE_PLAYBACK,
-	DISPLAY_PAGE_DIAGNOSTICS
+	DISPLAY_PAGE_DIAGNOSTICS,
+#if USB_CDC_ENABLED
+	DISPLAY_PAGE_STARTUP_LOG,
+#endif
+	DISPLAY_PAGE_COUNT
 } display_page_t;
 
 typedef enum

@@ -72,6 +72,10 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 - LCD draw-operation and per-channel FFT times are reported as 100 ms maximum/average values; loop distributions accumulate during streaming
 - Expand the CDC transmit FIFO to 32 KiB to reduce log loss during temporary PC read stalls
 - Add columns to periodic CDC rows; existing CSV analysis tools need to be updated for the new header
+- Switch DMA transfers to completion-IRQ scheduling and send 64 frames of silence when PCM is temporarily unavailable during playback
+- Base USB feedback on the actual output rate calculated from the PIO clock divider rather than the nominal sample rate
+- When the USB receive FIFO exceeds 75% capacity, discard only old frames to reduce its fill to about 50%
+- Start and resume playback after accumulating the greater of approximately 6 ms or the 1024-frame feedback target
 
 #### Display and Load
 
@@ -159,7 +163,7 @@ Major changes from `Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling`:
 
 - Selectable USB Audio Class 1.0 / 2.0
 - Asynchronous feedback control using an Async Feedback Endpoint
-- Starts I²S playback and PI feedback control after a sample-rate-dependent prefill of approximately 6 ms
+- Starts I²S playback and PI feedback control after a prefill of the greater of approximately 6 ms or the 1024-frame feedback target
 - Real-time buffer water-level monitor
 - 11-band FFT display with A-weighting
 - No oversampling (NOS)
@@ -277,7 +281,7 @@ Compared with Ver7 (development designation):
 
 With YouTube playing on Windows 11 26H2 and Google Chrome 156.0.8078.80 (official 64-bit build), the supported output formats were selected and checked on both UAC1 and UAC2 firmware builds. The checked combinations were 16/24-bit at 44.1/48/88.2/96kHz in UAC1, and 16/24/32-bit at those rates in UAC2. Checks covered both stable and unsettled buffer-water-level conditions and lasted approximately 30 seconds; exact per-check durations were not recorded.
 
-Note: During these checks, O (ring-buffer overflow discards), F (USB receive FIFO resynchronization discards), and U (playback output stops) all remained at zero. These counters describe how the device handled received data and do not detect losses on the host or USB bus. This is an observation on the stated setup, not a guarantee for other environments or playback conditions.
+Note: During these checks, O (ring-buffer overflow discards), F (old frames discarded when the USB receive FIFO is near capacity), and U (playback output stops) all remained at zero. These counters describe how the device handled received data and do not detect losses on the host or USB bus. This is an observation on the stated setup, not a guarantee for other environments or playback conditions.
 
 ---
 
@@ -314,8 +318,9 @@ The X button on Pico Display Pack 2.0 cycles through the following screens in on
 - Boot Screen
 - Playback Screen
 - Diagnostic Screen
+- Playback Start Log screen (CDC-enabled builds only)
 
-- X : Next screen (Boot → Playback → Diagnostics → Boot)
+- X : Next screen (Boot → Playback → Diagnostics → Playback Start Log → Boot with CDC enabled; otherwise omit Playback Start Log)
 
 On the diagnostic screen:
 
@@ -325,6 +330,14 @@ On the diagnostic screen:
 - Hold Y for 3 seconds : Reset diagnostic counters and the USB event log (a countdown is shown while holding)
 
 USB event logging starts at boot, and the latest 64 events remain available on the Diagnostics screen. It records events such as USB bus resets/disconnects, device/configuration/string descriptor requests, configuration mount/unmount, and UAC control requests. This is event-driven logging, not a periodic playback-state log, so the display does not change while playback continues without a new event. Track changes and other USB audio state transitions may add new entries. Holding Y for 3 seconds clears the collected diagnostic values and USB event log; logging resumes with subsequent events. The O/F/S/C/U event counters are updated when events occur regardless of the active screen. Periodic diagnostic statistics, such as buffer levels and processing intervals, are collected while the Diagnostics screen is active or CDC is connected. Collected diagnostic values are retained when leaving the screen, and collection resumes from those values when it is reopened. The playback screen continues audio playback, FFT, and bit-depth/sample-rate display.
+
+#### Playback Start Log screen
+
+In CDC-enabled builds (`USB_BRINGUP_LEVEL=3`), press X on the Diagnostics screen to open `PLAYBACK START LOG`. It records without opening a COM port, including when connected to Android, and can be photographed while connected. `SILENCE EVENTS` counts silence-substitution episodes and `SILENCE FRAMES` counts frames scheduled to DMA since boot; the latter includes any interrupted by a stop, so it is not necessarily the number actually played.
+
+The newest records are shown first. Press A for older records and B for newer ones. State transitions show uptime seconds (wrapping every 100000 seconds), the previous and next state, sample rate, ring fill `R`, and DMA pool `D`. For example, `BUFF>STRM` shows the levels at playback start. `SILENCE START` marks the first silence block, `SILENCE PCM` the return to PCM, and `SILENCE STOP` a DMA stop; `F` on the end row is the number of frames scheduled in that episode. DMA pool fill is an upper bound including the block being played.
+
+The screen retains the latest 128 records independently of CDC transmission and reports overwritten records as `HISTORY OVERWRITTEN`. Holding Y on the Diagnostics screen does not clear this history; power-off or reboot clears the history and totals, so take photos before unplugging USB.
 
 #### USB CDC Diagnostic Log
 
@@ -336,11 +349,13 @@ Despite their names, `USBBUF_CAPACITY` and `USBBUF_FREE_*` describe audio ring c
 
 The 32 KiB CDC transmit FIFO retains logs during temporary PC read stalls. If the FIFO runs out of space during a longer stall, periodic rows are dropped and reported as `LOG_ROWS_DROPPED` when transmission resumes. Ring, LCD, and FFT statistics in the next periodic row accumulate since the last successfully queued periodic row. Unsent FIFO data is discarded when CDC disconnects. This FIFO uses RAM only in CDC-enabled builds and is separate from the audio buffer.
 
+In CDC-enabled builds, state transitions and DMA silence substitution are recorded in RAM even before the COM port opens, then emitted as `TRACE,UPTIME_US,EVENT,FROM,TO,RATE,RING,DMA_POOL,SILENCE_FRAMES` rows. `STATE` levels are sampled just before the transition; the DMA pool is an upper bound including the block being played. `SILENCE_START` marks the first scheduled silence block, `SILENCE_RESUME` the return to PCM DMA, and `SILENCE_STOP` a DMA stop before PCM resumes. The end row's `SILENCE_FRAMES` counts frames scheduled to DMA, including any interrupted by a stop, not necessarily frames actually played. An ongoing silence episode has no end row yet. Times are microseconds since boot; subtract `#TRACE_SESSION_START_US` to compare with CDC session time. The queue retains the latest 128 unsent records and reports overwritten records as `TRACE_DROPPED`. Records are removed from the pending queue when queued to the CDC transmit FIFO; unsent FIFO data is lost on CDC disconnect and RAM history is lost on power-off or reboot. Display history is kept separately from the pending queue. Silence substitution alone cannot account for every audible click.
+
 USB startup levels are `0` (USB off), `1` (TinyUSB initialization only, no CDC), `2` (full operation, no CDC), and `3` (full operation with CDC diagnostic logging). The default is `2`. Specify `-DUSB_BRINGUP_LEVEL=3` only when diagnostic logging is needed. If an existing CMake cache still contains `3`, pass `-DUSB_BRINGUP_LEVEL=2` or clear the cache before reconfiguring.
 
-Normal playback starts or resumes after approximately 6 ms of audio has accumulated in the ring at the current sample rate. While buffering, no new ring data is moved into DMA, but already queued DMA data is drained. The CSV metadata reports this time as `PREFILL_MS`. The existing CMake option `USB_AUDIO_PREFILL_FRAMES` (reported as `PREFILL_FRAMES`) is the legacy start threshold for draining queued data in non-buffering states, not the normal playback prefill amount.
+Normal playback starts or resumes after the greater of approximately 6 ms of audio at the current sample rate or the 1024-frame feedback target has accumulated in the ring. For example, this is 1024 frames (about 23.2 ms) at 44.1 kHz and 1152 frames (6 ms) at 192 kHz. While buffering, no new ring data is moved into DMA, but already queued DMA data is drained. CSV metadata reports the time-based threshold as `PREFILL_MS` and the minimum frame count as `PREFILL_MIN_FRAMES`. The existing CMake option `USB_AUDIO_PREFILL_FRAMES` (reported as `PREFILL_FRAMES`) is the legacy start threshold for draining queued data in non-buffering states, not the normal playback prefill amount.
 
-Audio-state history is recorded about every 100 ms during playback. When an anomaly is detected, the approximately 4.8 seconds before and 1.6 seconds after it are retained as a frozen history for review. Detected anomalies are added to the USB log as red `E` entries: `01` buffer underflow, `02` overflow/discard, `03` USB receive FIFO resynchronization, `04` USB bus reset/disconnect, `05` playback output stop, `06` Core0 loop interval overrun, `07` Core1 loop interval overrun, `08` USB OUT packet interval of at least 3 ms, `09` PIO TX FIFO stall, `0A` DMA AHB transfer error, `0B` invalid PCM format, `0C` invalid PCM frame boundary, and `0D` click candidate. Click candidates can also be normal audio. These events also record state, rate, ring fill, and DMA-pool level in the CDC log. PIO stall monitoring starts 10 ms after output begins. Each history entry shows uptime seconds, audio state, ring-buffer level, and DMA-pool level.
+Audio-state history is recorded about every 100 ms during playback. When an anomaly is detected, the approximately 4.8 seconds before and 1.6 seconds after it are retained as a frozen history for review. Detected anomalies are added to the USB log as red `E` entries: `01` buffer underflow, `02` overflow/discard, `03` old data discarded when the USB receive FIFO is near capacity, `04` USB bus reset/disconnect, `05` playback output stop, `06` Core0 loop interval overrun, `07` Core1 loop interval overrun, `08` USB OUT packet interval of at least 3 ms, `09` PIO TX FIFO stall, `0A` DMA AHB transfer error, `0B` invalid PCM format, `0C` invalid PCM frame boundary, and `0D` click candidate. Click candidates can also be normal audio. These events also record state, rate, ring fill, and DMA-pool level in the CDC log. PIO stall monitoring starts 10 ms after output begins. Each history entry shows uptime seconds, audio state, ring-buffer level, and DMA-pool level.
 
 ### Playback Screen
 
@@ -374,7 +389,7 @@ If the FFT bars and peak meters do not move while music is playing, first check 
 
 Press the X button on the playback screen to switch to the diagnostic screen.
 
-The X button cycles through Boot → Playback → Diagnostics → Boot. Y does not navigate between screens; holding it for 3 seconds on the Diagnostics screen resets the diagnostic counters and USB event log.
+The X button cycles through Boot → Playback → Diagnostics, then through Playback Start Log in CDC-enabled builds, before returning to Boot. Y does not navigate between screens; holding it for 3 seconds on the Diagnostics screen resets the diagnostic counters and USB event log.
 
 #### Audio Status Information
 
@@ -438,7 +453,7 @@ The right side of the diagnostic screen displays processing statistics.
 | Counter | Description |
 |---------|---------|
 | O | Frames discarded due to ring-buffer overflow |
-| F | Frames discarded during USB receive FIFO resynchronization |
+| F | Old frames discarded when the USB receive FIFO is near capacity |
 | S | Frames discarded during sample-rate switching |
 | C | Frames cleared during restart or stop processing |
 | U | Output stoppage count detected during playback |

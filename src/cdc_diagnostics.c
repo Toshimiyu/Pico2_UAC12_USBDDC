@@ -19,6 +19,8 @@
 #define CDC_LOG_PERIOD_US 100000u
 #define CDC_RING_AVERAGE_PERIOD_US 1000u
 #define CDC_EVENT_QUEUE_SIZE 16u
+#define CDC_TRACE_QUEUE_SIZE 128u
+#define CDC_TRACE_HISTORY_SIZE 128u
 #define CDC_CSV_LINE_SIZE 480u
 #define CDC_MEMORY_LINE_SIZE 128u
 #define STRINGIFY_DETAIL(value) #value
@@ -64,6 +66,18 @@ typedef struct
 } cdc_timing_window_t;
 
 static spin_lock_t *event_lock;
+static spin_lock_t *trace_lock;
+static cdc_trace_t trace_queue[CDC_TRACE_QUEUE_SIZE];
+static cdc_trace_t trace_history[CDC_TRACE_HISTORY_SIZE];
+static uint32_t trace_head;
+static uint32_t trace_count;
+static uint32_t trace_sequence;
+static uint32_t trace_dropped;
+static uint32_t trace_history_head;
+static uint32_t trace_history_count;
+static cdc_trace_summary_t trace_summary;
+static uint32_t silence_frames;
+static bool silence_active;
 static cdc_anomaly_t event_queue[CDC_EVENT_QUEUE_SIZE];
 static uint8_t event_head;
 static uint8_t event_count;
@@ -72,6 +86,7 @@ static uint32_t row_drop_count;
 static uint8_t session_header_pos;
 static volatile bool session_active;
 static uint32_t session_start_us;
+static uint64_t session_start_uptime_us;
 static uint32_t next_sample_us;
 static uint32_t next_ring_average_us;
 static uint64_t ring_average_sum;
@@ -92,7 +107,7 @@ static const char *anomaly_name(uint8_t code)
 	{
 	case 1: return "UNDERFLOW";
 	case 2: return "OVERFLOW";
-	case 3: return "FIFO_RESYNC";
+	case 3: return "FIFO_TRIM";
 	case 4: return "USB_EVENT";
 	case 5: return "OUTPUT_STOP";
 	case 6: return "CORE0_LOOP_GAP";
@@ -133,6 +148,140 @@ static bool cdc_write(const char *text, uint32_t length)
 	return true;
 }
 
+// Caller holds trace_lock; no USB or audio-buffer operations run under this lock.
+static void trace_push(cdc_trace_t event)
+{
+	if (trace_count == CDC_TRACE_QUEUE_SIZE)
+	{
+		trace_head = (trace_head + 1u) % CDC_TRACE_QUEUE_SIZE;
+		trace_count--;
+		trace_dropped++;
+	}
+	event.sequence = ++trace_sequence;
+	trace_queue[(trace_head + trace_count) % CDC_TRACE_QUEUE_SIZE] = event;
+	trace_count++;
+	if (trace_history_count == CDC_TRACE_HISTORY_SIZE)
+	{
+		trace_history_head = (trace_history_head + 1u) % CDC_TRACE_HISTORY_SIZE;
+		trace_history_count--;
+		trace_summary.history_overwritten++;
+	}
+	trace_history[(trace_history_head + trace_history_count) % CDC_TRACE_HISTORY_SIZE] = event;
+	trace_history_count++;
+}
+
+void cdc_diagnostics_silence_block(uint32_t frames)
+{
+	if (trace_lock == NULL)
+		return;
+	const uint64_t now = time_us_64();
+	const uint32_t owner = spin_lock_blocking(trace_lock);
+	if (!silence_active)
+	{
+		silence_active = true;
+		silence_frames = 0;
+		trace_summary.silence_episodes++;
+		trace_push((cdc_trace_t){.uptime_us = now, .kind = TRACE_SILENCE_START});
+	}
+	silence_frames += frames;
+	trace_summary.silence_frames += frames;
+	spin_unlock(trace_lock, owner);
+}
+
+bool cdc_diagnostics_get_trace(uint32_t age, cdc_trace_t *event)
+{
+	if (trace_lock == NULL || event == NULL)
+		return false;
+	const uint32_t owner = spin_lock_blocking(trace_lock);
+	const bool found = age < trace_history_count;
+	if (found)
+		*event = trace_history[(trace_history_head + trace_history_count - 1u - age) % CDC_TRACE_HISTORY_SIZE];
+	spin_unlock(trace_lock, owner);
+	return found;
+}
+
+void cdc_diagnostics_get_trace_summary(cdc_trace_summary_t *summary)
+{
+	if (trace_lock == NULL || summary == NULL)
+		return;
+	const uint32_t owner = spin_lock_blocking(trace_lock);
+	*summary = trace_summary;
+	spin_unlock(trace_lock, owner);
+}
+
+void cdc_diagnostics_silence_end(bool stopped)
+{
+	if (trace_lock == NULL)
+		return;
+	const uint64_t now = time_us_64();
+	const uint32_t owner = spin_lock_blocking(trace_lock);
+	if (silence_active)
+	{
+		trace_push((cdc_trace_t){
+			.uptime_us = now,
+			.kind = stopped ? TRACE_SILENCE_STOP : TRACE_SILENCE_RESUME,
+			.silence_frames = silence_frames
+		});
+		silence_active = false;
+	}
+	spin_unlock(trace_lock, owner);
+}
+
+void cdc_diagnostics_trace_state(usb_audio_state_t previous_state, usb_audio_state_t state)
+{
+	if (trace_lock == NULL)
+		return;
+	const cdc_trace_t trace = {
+		.uptime_us = time_us_64(), .kind = TRACE_STATE,
+		.from = previous_state, .to = state, .rate = audio_state.freq,
+		.ring = audio_ring_total_frames(), .dma_pool = dma_tx_pool_frames()
+	};
+	const uint32_t owner = spin_lock_blocking(trace_lock);
+	trace_push(trace);
+	spin_unlock(trace_lock, owner);
+}
+
+static void write_pending_trace(void)
+{
+	char line[160];
+	cdc_trace_t event;
+	uint32_t owner = spin_lock_blocking(trace_lock);
+	const uint32_t dropped = trace_dropped;
+	const bool have_event = trace_count != 0;
+	if (have_event)
+		event = trace_queue[trace_head];
+	spin_unlock(trace_lock, owner);
+
+	int length;
+	if (dropped != 0)
+		length = snprintf(line, sizeof(line), "TRACE_DROPPED,%lu\r\n", (unsigned long)dropped);
+	else if (!have_event)
+		return;
+	else if (event.kind == TRACE_STATE)
+		length = snprintf(line, sizeof(line), "TRACE,%llu,STATE,%s,%s,%lu,%lu,%lu,\r\n",
+			(unsigned long long)event.uptime_us, audio_state_name(event.from),
+			audio_state_name(event.to), (unsigned long)event.rate,
+			(unsigned long)event.ring, (unsigned long)event.dma_pool);
+	else
+		length = snprintf(line, sizeof(line), "TRACE,%llu,%s,,,,,,%lu\r\n",
+			(unsigned long long)event.uptime_us,
+			event.kind == TRACE_SILENCE_START ? "SILENCE_START" :
+				(event.kind == TRACE_SILENCE_RESUME ? "SILENCE_RESUME" : "SILENCE_STOP"),
+			(unsigned long)event.silence_frames);
+	if (length < 0 || (size_t)length >= sizeof(line) || !cdc_write(line, (uint32_t)length))
+		return;
+
+	owner = spin_lock_blocking(trace_lock);
+	if (dropped != 0)
+		trace_dropped -= dropped;
+	else if (trace_count != 0 && trace_queue[trace_head].sequence == event.sequence)
+	{
+		trace_head = (trace_head + 1u) % CDC_TRACE_QUEUE_SIZE;
+		trace_count--;
+	}
+	spin_unlock(trace_lock, owner);
+}
+
 static uint32_t session_milliseconds(uint32_t timestamp_us)
 {
 	return (timestamp_us - session_start_us) / 1000u;
@@ -149,13 +298,28 @@ static void reset_event_queue(void)
 
 static bool start_session(uint32_t now)
 {
+	if (session_header_pos == 0)
+	{
+		session_start_uptime_us = time_us_64();
+		session_start_us = (uint32_t)session_start_uptime_us;
+	}
 	const char *headers[] = {
-		"#FW_VERSION=" FW_VERSION ",PREFILL_FRAMES=" STRINGIFY(USB_AUDIO_PREFILL_FRAMES) ",PREFILL_MS=" STRINGIFY(TARGET_PREFILL_MS) ",USB_MODE=" USB_MODE_NAME "\r\n",
+		NULL,
 		NULL,
 		CDC_CSV_HEADER,
 		"STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE\r\n",
-		"ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL\r\n"
+		"ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL\r\n",
+		NULL,
+		"TRACE,UPTIME_US,EVENT,FROM,TO,RATE,RING,DMA_POOL,SILENCE_FRAMES\r\n"
 	};
+	char config_header[160];
+	const int config_header_length = snprintf(config_header, sizeof(config_header),
+		"#FW_VERSION=" FW_VERSION ",PREFILL_FRAMES=" STRINGIFY(USB_AUDIO_PREFILL_FRAMES)
+		",PREFILL_MS=" STRINGIFY(TARGET_PREFILL_MS) ",PREFILL_MIN_FRAMES=%lu,USB_MODE=" USB_MODE_NAME "\r\n",
+		(unsigned long)SIZE_BUFFER_FB_THRESHOLD);
+	if (config_header_length < 0 || (size_t)config_header_length >= sizeof(config_header))
+		return false;
+	headers[0] = config_header;
 	char memory_header[CDC_MEMORY_LINE_SIZE];
 	const uint32_t static_ram_bytes =
 		(uint32_t)((uintptr_t)__bss_end__ - (uintptr_t)__data_start__);
@@ -170,6 +334,12 @@ static bool start_session(uint32_t now)
 	if (memory_header_length < 0 || (size_t)memory_header_length >= sizeof(memory_header))
 		return false;
 	headers[1] = memory_header;
+	char clock_header[64];
+	const int clock_header_length = snprintf(clock_header, sizeof(clock_header),
+		"#TRACE_SESSION_START_US=%llu\r\n", (unsigned long long)session_start_uptime_us);
+	if (clock_header_length < 0 || (size_t)clock_header_length >= sizeof(clock_header))
+		return false;
+	headers[5] = clock_header;
 	while (session_header_pos < sizeof(headers) / sizeof(headers[0]))
 	{
 		const char *header = headers[session_header_pos];
@@ -180,7 +350,6 @@ static bool start_session(uint32_t now)
 
 	reset_event_queue();
 	row_drop_count = 0;
-	session_start_us = now;
 	next_sample_us = now;
 	next_ring_average_us = now;
 	ring_average_sum = 0;
@@ -454,6 +623,7 @@ void cdc_diagnostics_init(void)
 		return;
 
 	event_lock = spin_lock_init(spin_lock_claim_unused(true));
+	trace_lock = spin_lock_init(spin_lock_claim_unused(true));
 }
 
 bool cdc_diagnostics_is_connected(void)
@@ -499,13 +669,15 @@ void cdc_diagnostics_log_anomaly(uint8_t code, const char *detail_name, uint32_t
 void cdc_diagnostics_log_state_change(usb_audio_state_t previous_state,
 									  usb_audio_state_t state, bool session_start)
 {
-	if (!COM_PORT_OUTPUT_ENABLE || !session_active || event_lock == NULL)
+	if (!COM_PORT_OUTPUT_ENABLE || event_lock == NULL)
 		return;
 
 	const uint32_t timestamp_us = time_us_32();
 	const uint32_t sample_rate = audio_state.freq;
 	const uint32_t ring_frames = (uint32_t)audio_ring_total_frames();
 	const uint32_t dma_pool_frames = dma_tx_pool_frames();
+	if (!session_active)
+		return;
 	const uint32_t owner = spin_lock_blocking(event_lock);
 	if (!session_start)
 	{
@@ -601,9 +773,23 @@ void cdc_diagnostics_task(void)
 			row_drop_count++;
 	}
 	write_pending_anomalies(now);
+	write_pending_trace();
 }
 
 #else
+
+bool cdc_diagnostics_get_trace(uint32_t age, cdc_trace_t *event)
+{
+	(void)age;
+	(void)event;
+	return false;
+}
+
+void cdc_diagnostics_get_trace_summary(cdc_trace_summary_t *summary)
+{
+	if (summary != NULL)
+		*summary = (cdc_trace_summary_t){0};
+}
 
 void cdc_diagnostics_init(void)
 {
@@ -632,6 +818,22 @@ void cdc_diagnostics_log_state_change(usb_audio_state_t previous_state,
 	(void)previous_state;
 	(void)state;
 	(void)session_start;
+}
+
+void cdc_diagnostics_silence_block(uint32_t frames)
+{
+	(void)frames;
+}
+
+void cdc_diagnostics_trace_state(usb_audio_state_t previous_state, usb_audio_state_t state)
+{
+	(void)previous_state;
+	(void)state;
+}
+
+void cdc_diagnostics_silence_end(bool stopped)
+{
+	(void)stopped;
 }
 
 void cdc_diagnostics_record_lcd_time(uint32_t duration_us)

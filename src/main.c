@@ -106,6 +106,12 @@ static void display_service(void)
 		{
 			debug_gauge_init();
 		}
+#if USB_CDC_ENABLED
+		else if (page == DISPLAY_PAGE_STARTUP_LOG)
+		{
+			startup_log_init();
+		}
+#endif
 		else if (page == DISPLAY_PAGE_PLAYBACK)
 		{
 			display_rta_set_format(audio_state.bit_depth, (float)audio_state.freq / 1000.0f);
@@ -127,6 +133,12 @@ static void display_service(void)
 	{
 		debug_gauge_service();
 	}
+#if USB_CDC_ENABLED
+	else if (page == DISPLAY_PAGE_STARTUP_LOG)
+	{
+		startup_log_service();
+	}
+#endif
 }
 
 static void service_idle_cleanup(void)

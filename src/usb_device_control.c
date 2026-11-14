@@ -64,7 +64,7 @@ volatile bool audio_data_seen = false;
 #define FB_BASE_LIMIT_PPM  (50.0f)
 #define FB_BOOST_START_ERR (128.0f)
 #define FB_BOOST_FULL_ERR  (512.0f)
-#define FB_BOOST_MAX_PPM   (500.0f)
+#define FB_BOOST_MAX_PPM   (100.0f)
 #define EVT_LOG_N 64
 #define AUDIO_HISTORY_N 64
 #define AUDIO_HISTORY_PRETRIGGER_N 48
@@ -430,6 +430,10 @@ static void level_stats_reset(void);
 static void set_state(usb_audio_state_t s)
 {
     const usb_audio_state_t previous_state = stats.state;
+#if USB_CDC_ENABLED
+    if (previous_state != s)
+        cdc_diagnostics_trace_state(previous_state, s);
+#endif
     stats.state = s;
 
     dma_diag.armed = diagnostics_enabled &&
@@ -984,18 +988,37 @@ static void service_rx(void)
 	if (avail > (fifo_depth / 4u) * 3u)
 	{
 		reset_pcm_candidate_history();
-    	{
-			const uint32_t lost = avail / frame_bytes;
-			rx_frames_counter += lost;
-			stats.drop_fifo_frames += lost;
+		const uint16_t retain =
+			(uint16_t)((fifo_depth / 2u / frame_bytes) * frame_bytes);
+		uint32_t discard = avail - retain;
+		uint32_t dropped_bytes = 0;
+		while (discard != 0)
+		{
+			uint16_t n = (uint16_t)(discard > sizeof(rx_raw) ? sizeof(rx_raw) : discard);
+			n = (uint16_t)((n / frame_bytes) * frame_bytes);
+			const uint16_t got = n != 0 ? tud_audio_read(rx_raw, n) : 0;
+			if (n == 0 || got != n)
+			{
+				discard_invalid_pcm(12, "FIFO_DROP_READ", got, frame_bytes,
+									dropped_bytes + got);
+				return;
+			}
+			discard -= got;
+			dropped_bytes += got;
 		}
 
-    	tud_audio_clear_ep_out_ff();
+		const uint32_t dropped_frames = dropped_bytes / frame_bytes;
+		rx_frames_counter += dropped_frames;
+		stats.drop_fifo_frames += dropped_frames;
+		usb_audio_log_anomaly(3, (uint8_t)(dropped_bytes / 16u),
+							  "DROP_BYTES", dropped_bytes);
 
-		stats.fifo_resync_count++;
-		usb_audio_log_anomaly(3, (uint8_t)(avail / 16u), "BYTES", avail);
-
-    	return;
+		avail = tud_audio_available();
+		if (avail % frame_bytes != 0)
+		{
+			discard_invalid_pcm(12, "AVAILABLE_BYTES", avail, frame_bytes, 0);
+			return;
+		}
 	}
 
 	while (avail >= frame_bytes)
@@ -1105,6 +1128,9 @@ static void service_state(void)
 	{
     	uint32_t prefill_frames =
         	(audio_state.freq * TARGET_PREFILL_MS) / 1000u;
+
+		if (prefill_frames < FB_TARGET_LEVEL)
+			prefill_frames = FB_TARGET_LEVEL;
 
     	if (prefill_frames >= SIZE_AUDIO_RING_FRAMES)
         	prefill_frames = SIZE_AUDIO_RING_FRAMES - 1u;
@@ -1317,7 +1343,7 @@ fb.integ_hz = integ_next;
 
 #endif
 
-const float rate_hz = (float)fs + adj_hz;
+const float rate_hz = i2s_actual_sample_rate() + adj_hz;
 stats.feedback_hz = rate_hz;
 
 // 16.16 samples per 1 ms frame
