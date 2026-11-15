@@ -107,13 +107,14 @@
 // Endpoint buffer size (at least 97 is needed for (96+1) kHz * 1 ms).
 #define SIZE_EP_BUFFER (896)
 
-// Audio ring capacity in stereo frames. 2048 frames provides about 10.7 ms of
-// buffering at 192 kHz; the feedback target follows at 50% capacity.
-#define SIZE_AUDIO_RING_FRAMES (2048)
+// Audio ring capacity in stereo frames. 4096 frames provides about 21.3 ms of
+// buffering at 192 kHz; the feedback target follows at 75% capacity.
+#define SIZE_AUDIO_RING_FRAMES (4096)
 #define TARGET_PREFILL_MS 6
+#define USB_AUDIO_STARTUP_PREFILL_FRAMES (SIZE_AUDIO_RING_FRAMES * 3u / 4u)
 
 // Legacy start threshold for draining queued audio in non-buffering states.
-// Normal playback starts after the greater of TARGET_PREFILL_MS and the feedback target has accumulated.
+// Normal playback startup uses the greater of TARGET_PREFILL_MS and USB_AUDIO_STARTUP_PREFILL_FRAMES.
 #ifndef USB_AUDIO_PREFILL_FRAMES
 #define USB_AUDIO_PREFILL_FRAMES (1536)
 #endif
@@ -129,8 +130,8 @@
 #define LOOP0_WARN_US (1000)
 #define LOOP1_WARN_US (1000)
 
-// Feedback target level (50%) threshold. LCD drawing is allowed only at or above this level.
-#define SIZE_BUFFER_FB_THRESHOLD (SIZE_AUDIO_RING_FRAMES / 2)
+// Feedback target level (75%) threshold. LCD drawing is allowed only at or above this level.
+#define SIZE_BUFFER_FB_THRESHOLD (USB_AUDIO_STARTUP_PREFILL_FRAMES)
 
 // LCD drawing (blocking SPI on Core0) is only allowed while the ring holds at least this many frames.
 // Defined once here: display services are allowed when at least half the feedback target remains buffered.

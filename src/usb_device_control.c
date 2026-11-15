@@ -61,10 +61,10 @@ volatile bool audio_data_seen = false;
 #define FB_UPDATE_PERIOD_US (1000) // one update per USB frame
 #define HOST_RATE_UPDATE_US (250000u)
 #define HOST_RATE_STREAM_WARMUP_US (1000000u)
-#define FB_BASE_LIMIT_PPM  (50.0f)
+#define FB_BASE_LIMIT_PPM  (100.0f)
 #define FB_BOOST_START_ERR (128.0f)
 #define FB_BOOST_FULL_ERR  (512.0f)
-#define FB_BOOST_MAX_PPM   (100.0f)
+#define FB_BOOST_MAX_PPM   (1000.0f)
 #define EVT_LOG_N 64
 #define AUDIO_HISTORY_N 64
 #define AUDIO_HISTORY_PRETRIGGER_N 48
@@ -76,8 +76,8 @@ volatile bool audio_data_seen = false;
 #define PCM_CLICK_CANDIDATE_MAX_HITS_PER_BLOCK (4u)
 
 // Sample-rate change: how long to wait for the Ring + DMA pool to play out before the stop is forced.
-// Worst case drain = (Ring 2048 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 69 ms.
-#define SWITCH_DRAIN_TIMEOUT_US (100000u)
+// Worst case drain = (Ring 4096 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 115 ms.
+#define SWITCH_DRAIN_TIMEOUT_US (150000u)
 
 // ---- Diagnostic build switches (NEVER ship with FIXED_FEEDBACK_TEST = 1) -------------------------
 // FIXED_FEEDBACK_TEST = 1 : feedback control OFF. The requested rate is fs + FIXED_FEEDBACK_OFFSET_HZ.
@@ -1129,8 +1129,8 @@ static void service_state(void)
     	uint32_t prefill_frames =
         	(audio_state.freq * TARGET_PREFILL_MS) / 1000u;
 
-		if (prefill_frames < FB_TARGET_LEVEL)
-			prefill_frames = FB_TARGET_LEVEL;
+		if (prefill_frames < USB_AUDIO_STARTUP_PREFILL_FRAMES)
+			prefill_frames = USB_AUDIO_STARTUP_PREFILL_FRAMES;
 
     	if (prefill_frames >= SIZE_AUDIO_RING_FRAMES)
         	prefill_frames = SIZE_AUDIO_RING_FRAMES - 1u;
@@ -1265,9 +1265,9 @@ adj_hz = FIXED_FEEDBACK_OFFSET_HZ;
 if (st == USB_AUDIO_BUFFERING)
 {
     fb.integ_hz = 0.0f;
-	// BUFFERING中はバッファを早く溜めるため、強制的に定常レートより +0.025% 高い要求を送る
-    // 例: 192000Hz なら +0.00025f (+0.025%)250 ppm
-    adj_hz = (float)fs * 0.00030f;
+	// BUFFERING中はバッファを早く溜めるため、定常レートより +500ppm の要求を送る
+    // 例: 192000Hz なら +96Hz
+    adj_hz = (float)fs * 0.00050f;
 }
 else
 {

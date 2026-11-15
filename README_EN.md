@@ -61,6 +61,14 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 ## Change History
 
+### Current Changes (Unreleased)
+
+- Expand the audio ring from 2048 to 4096 stereo frames and set the feedback target and minimum normal-playback prefill to 3072 frames (75%)
+- Set the base feedback correction limit to 100 ppm and the maximum low-water limit to 1000 ppm; add 500 ppm of the nominal sample rate to the buffering request
+- Increase the sample-rate switch drain timeout to 150 ms
+- Skip voltage and PLL reconfiguration when the system clock is unchanged, while still updating the I²S divider
+- Change the UAC1/UAC2 USB configuration descriptor's maximum current to 150 mA
+
 ### V1.9
 
 #### USB Reception and Diagnostics
@@ -163,7 +171,7 @@ Major changes from `Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling`:
 
 - Selectable USB Audio Class 1.0 / 2.0
 - Asynchronous feedback control using an Async Feedback Endpoint
-- Starts I²S playback and PI feedback control after a prefill of the greater of approximately 6 ms or the 1024-frame feedback target
+- Starts I²S playback and PI feedback control after a prefill of the greater of approximately 6 ms or 3072 frames
 - Real-time buffer water-level monitor
 - 11-band FFT display with A-weighting
 - No oversampling (NOS)
@@ -353,7 +361,9 @@ In CDC-enabled builds, state transitions and DMA silence substitution are record
 
 USB startup levels are `0` (USB off), `1` (TinyUSB initialization only, no CDC), `2` (full operation, no CDC), and `3` (full operation with CDC diagnostic logging). The default is `2`. Specify `-DUSB_BRINGUP_LEVEL=3` only when diagnostic logging is needed. If an existing CMake cache still contains `3`, pass `-DUSB_BRINGUP_LEVEL=2` or clear the cache before reconfiguring.
 
-Normal playback starts or resumes after the greater of approximately 6 ms of audio at the current sample rate or the 1024-frame feedback target has accumulated in the ring. For example, this is 1024 frames (about 23.2 ms) at 44.1 kHz and 1152 frames (6 ms) at 192 kHz. While buffering, no new ring data is moved into DMA, but already queued DMA data is drained. CSV metadata reports the time-based threshold as `PREFILL_MS` and the minimum frame count as `PREFILL_MIN_FRAMES`. The existing CMake option `USB_AUDIO_PREFILL_FRAMES` (reported as `PREFILL_FRAMES`) is the legacy start threshold for draining queued data in non-buffering states, not the normal playback prefill amount.
+Normal playback starts or resumes after the greater of approximately 6 ms of audio at the current sample rate or 3072 frames has accumulated in the ring. For example, this is 3072 frames (about 32 ms) at 96 kHz and 3072 frames (about 16 ms) at 192 kHz. While buffering, no new ring data is moved into DMA, but already queued DMA data is drained. CSV metadata reports the time-based threshold as `PREFILL_MS` and the minimum frame count as `PREFILL_MIN_FRAMES`. The existing CMake option `USB_AUDIO_PREFILL_FRAMES` (reported as `PREFILL_FRAMES`) is the legacy start threshold for draining queued data in non-buffering states, not the normal playback prefill amount.
+
+The ring holds 4096 stereo frames, with a feedback target of 3072 frames (75%). The normal feedback correction limit is 100 ppm; when the filtered level falls more than 128 frames below the target, the limit increases progressively, reaching 1000 ppm at a deficit of 512 frames or more. During buffering, the request adds 500 ppm of the nominal sample rate to the reference output rate. These are configuration values and do not guarantee that the host follows them.
 
 Audio-state history is recorded about every 100 ms during playback. When an anomaly is detected, the approximately 4.8 seconds before and 1.6 seconds after it are retained as a frozen history for review. Detected anomalies are added to the USB log as red `E` entries: `01` buffer underflow, `02` overflow/discard, `03` old data discarded when the USB receive FIFO is near capacity, `04` USB bus reset/disconnect, `05` playback output stop, `06` Core0 loop interval overrun, `07` Core1 loop interval overrun, `08` USB OUT packet interval of at least 3 ms, `09` PIO TX FIFO stall, `0A` DMA AHB transfer error, `0B` invalid PCM format, `0C` invalid PCM frame boundary, and `0D` click candidate. Click candidates can also be normal audio. These events also record state, rate, ring fill, and DMA-pool level in the CDC log. PIO stall monitoring starts 10 ms after output begins. Each history entry shows uptime seconds, audio state, ring-buffer level, and DMA-pool level.
 
@@ -584,7 +594,7 @@ Note: With the Android 16 (Sony XQ-ES44) device connected, a USB tester measured
 
 ### Android Click Investigation
 
-Similar clicks occurred in this project, so the feedback limits were changed to `FB_BASE_LIMIT_PPM=50` and `FB_BOOST_MAX_PPM=500`. The results below are from the derived [Pico2_UAC12_USBDDC_Weather](https://github.com/Toshimiyu/Pico2_UAC12_USBDDC_Weather) project, not measurements of this project.
+Similar clicks occurred in this project, and the feedback limits were previously changed to `FB_BASE_LIMIT_PPM=50` and `FB_BOOST_MAX_PPM=500`. The historical results below are from the derived [Pico2_UAC12_USBDDC_Weather](https://github.com/Toshimiyu/Pico2_UAC12_USBDDC_Weather) project, not measurements of this project with its current settings.
 
 On November 13, 2026, playback was observed on a Sony XQ-ES44 running Android 16 with the standard audio driver, using UAC2 at 48 kHz / 32-bit. Windows 11 26H2 was also tested at 48 kHz / 32-bit.
 
@@ -595,6 +605,14 @@ On November 13, 2026, playback was observed on a Sony XQ-ES44 running Android 16
 - The diagnostic screen showed O/F/S/C/U at zero and no anomaly events. This does not rule out every kind of audio problem.
 
 Reducing the feedback limits tended to improve the symptoms, but the cause remains unconfirmed. The roles of the app, audio effects, and feedback control need further investigation. Foobar2000 and disabling DSEE Ultimate are possible workarounds. Long-term stability with these settings has not been verified; overly narrow correction limits can allow the ring level to drift and cause dropouts.
+
+#### Status After the Current Adjustments
+
+- After adjusting the capacity, target level, feedback, and other settings, large drops in the ring level have rarely been observed, but occasional clicks remain. Because several settings changed, their individual effects have not been isolated.
+- TinyUSB converts UAC1 feedback to 10.14 format for transmission. Rejected UAC1 volume `SET_RES` requests were identified in diagnostic logs and support was added.
+- Rate changes within the same clock family skip PLL reconfiguration, but stop and reinitialize the PIO. The PIO is also reinitialized when output starts.
+- The change in click frequency, occurrence of OVERFLOW / UNDERFLOW, and whether feedback correction remains at its limit after the current adjustments have not been confirmed.
+- BCLK, LRCK, DATA, and DAC analog output waveforms during a click have not been measured. The cause has not been isolated to the host, device, or DAC. Future options include recording the output, observing the signals simultaneously, and comparing another host.
 
 ---
 
@@ -955,6 +973,7 @@ The display system provides a real-time FFT spectrum visualization and buffer-st
 - Clock switching control
   - 44.1kHz family: 336MHz
   - 48kHz family: 360MHz
+  - Rate changes with the same system clock skip voltage and system clock reconfiguration while updating the I²S divider
 - Software audio mute (output gain control)
 
 #### Core1

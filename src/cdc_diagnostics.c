@@ -316,7 +316,7 @@ static bool start_session(uint32_t now)
 	const int config_header_length = snprintf(config_header, sizeof(config_header),
 		"#FW_VERSION=" FW_VERSION ",PREFILL_FRAMES=" STRINGIFY(USB_AUDIO_PREFILL_FRAMES)
 		",PREFILL_MS=" STRINGIFY(TARGET_PREFILL_MS) ",PREFILL_MIN_FRAMES=%lu,USB_MODE=" USB_MODE_NAME "\r\n",
-		(unsigned long)SIZE_BUFFER_FB_THRESHOLD);
+		(unsigned long)USB_AUDIO_STARTUP_PREFILL_FRAMES);
 	if (config_header_length < 0 || (size_t)config_header_length >= sizeof(config_header))
 		return false;
 	headers[0] = config_header;

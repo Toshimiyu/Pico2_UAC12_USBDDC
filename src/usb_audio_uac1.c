@@ -53,7 +53,7 @@ bool usb_audio_class_get_format(uint8_t alt, usb_audio_format_t *format)
 
 static const uint8_t desc_uac1_configuration[] =
 {
-    TUD_CONFIG_DESCRIPTOR(1, UAC1_CONFIG_INTERFACE_COUNT, 0, UAC1_CONFIG_TOTAL_LEN, 0x00, 100),
+    TUD_CONFIG_DESCRIPTOR(1, UAC1_CONFIG_INTERFACE_COUNT, 0, UAC1_CONFIG_TOTAL_LEN, 0x00, 150),
     8, TUSB_DESC_INTERFACE_ASSOCIATION, ITF_NUM_AUDIO_CONTROL, 2,
         TUSB_CLASS_AUDIO, 0, 0, 0,
     TUD_AUDIO10_DESC_STD_AC(ITF_NUM_AUDIO_CONTROL, 0, 0),
