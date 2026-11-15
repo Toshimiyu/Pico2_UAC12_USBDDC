@@ -61,13 +61,18 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 ## Change History
 
-### Current Changes (Unreleased)
+### V2.0
 
 - Expand the audio ring from 2048 to 4096 stereo frames and set the feedback target and minimum normal-playback prefill to 3072 frames (75%)
 - Set the base feedback correction limit to 100 ppm and the maximum low-water limit to 1000 ppm; add 500 ppm of the nominal sample rate to the buffering request
 - Increase the sample-rate switch drain timeout to 150 ms
 - Skip voltage and PLL reconfiguration when the system clock is unchanged, while still updating the I²S divider
 - Change the UAC1/UAC2 USB configuration descriptor's maximum current to 150 mA
+- Switch DMA transfers to completion-IRQ scheduling and send 64 frames of silence when PCM is temporarily unavailable during playback
+- Base USB feedback on the actual output rate calculated from the PIO clock divider rather than the nominal sample rate
+- When the USB receive FIFO exceeds 75% capacity, discard only old frames to reduce its fill to about 50%
+- Support UAC1 volume `SET_RES` requests
+- In CDC-enabled builds, record state transitions and DMA silence substitution for the CDC log and Playback Start Log screen
 
 ### V1.9
 
@@ -80,10 +85,6 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 - LCD draw-operation and per-channel FFT times are reported as 100 ms maximum/average values; loop distributions accumulate during streaming
 - Expand the CDC transmit FIFO to 32 KiB to reduce log loss during temporary PC read stalls
 - Add columns to periodic CDC rows; existing CSV analysis tools need to be updated for the new header
-- Switch DMA transfers to completion-IRQ scheduling and send 64 frames of silence when PCM is temporarily unavailable during playback
-- Base USB feedback on the actual output rate calculated from the PIO clock divider rather than the nominal sample rate
-- When the USB receive FIFO exceeds 75% capacity, discard only old frames to reduce its fill to about 50%
-- Start and resume playback after accumulating the greater of approximately 6 ms or the 1024-frame feedback target
 
 #### Display and Load
 
