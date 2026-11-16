@@ -55,6 +55,9 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 
 ## 変更履歴
 
+<details>
+<summary>バージョン履歴を表示</summary>
+
 ### V2.1
 
 - **仕様変更：** UAC1/UAC2のOutput Terminalを`0x0304`（Desktop Speaker）から`0x0602`（Digital Audio Interface）に変更。AndroidはUAC1版とOnkyo HF Playerを使い、HF PlayerのUSBドライバーを使用する前提とし、UAC2版はWindows向けとします。
@@ -163,6 +166,8 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 - 高クロック動作を修正
 - RAM上で実行する構成を維持
 
+</details>
+
 ## 特長
 
 - USB Audio Class 1.0 / 2.0 切替対応
@@ -179,6 +184,9 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 - Pico Display Pack 2.0対応
 
 ## 測定結果
+
+<details>
+<summary>測定結果を表示</summary>
 
 Ver8の実測データ（測定記録・波形など）は、[DAC Modification History（2026年11月1日公開分）](https://github.com/Toshimiyu/DAC_Modification_History/tree/main/PicoAudioPack/20261101)で公開しています。
 
@@ -284,6 +292,8 @@ Ver7(開発呼称)との比較：
 Windows 11 26H2とGoogle Chrome 156.0.8078.80（公式ビルド、64ビット）でYouTubeを再生しながら、UAC1版とUAC2版の各対応フォーマットへ切り替えて確認しました。UAC1版では16/24bit、UAC2版では16/24/32bitについて、44.1/48/88.2/96kHzの組み合わせを確認しています。バッファー水位が安定した状態と、安定していない状態の両方で確認し、各確認はおおむね30秒前後でした（個別の再生時間は記録していません）。
 
 ※確認中、O（リングバッファーのオーバーフロー破棄）、F（USB受信FIFO高水位時の古いフレーム破棄）、U（再生出力停止）は、いずれも0でした。これらのカウンターはデバイスが受信したデータの処理状況を示すもので、ホストやUSBバス上で発生した欠落を検出するものではありません。この結果は記載した環境での実機観測であり、他の環境や再生条件での動作を保証するものではありません。
+
+</details>
 
 ## ハードウェア写真
 

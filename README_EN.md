@@ -61,6 +61,9 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 ## Change History
 
+<details>
+<summary>Show version history</summary>
+
 ### V2.1
 
 - **Specification change:** Change the UAC1/UAC2 Output Terminal from `0x0304` (Desktop Speaker) to `0x0602` (Digital Audio Interface). On Android, use the UAC1 build and Onkyo HF Player with its USB driver; the UAC2 build is intended for Windows.
@@ -175,6 +178,8 @@ Major changes from `Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling`:
 - Fixed operation in high-power clock mode
 - Maintained RAM execution architecture
 
+</details>
+
 ---
 
 ## Features
@@ -195,6 +200,9 @@ Major changes from `Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling`:
 ---
 
 ## Measurement Results
+
+<details>
+<summary>Show measurement results</summary>
 
 Ver8 measurement data (measurement records and waveforms) is published in [DAC Modification History (released November 1, 2026)](https://github.com/Toshimiyu/DAC_Modification_History/tree/main/PicoAudioPack/20261101).
 
@@ -300,6 +308,8 @@ Compared with Ver7 (development designation):
 With YouTube playing on Windows 11 26H2 and Google Chrome 156.0.8078.80 (official 64-bit build), the supported output formats were selected and checked on both UAC1 and UAC2 firmware builds. The checked combinations were 16/24-bit at 44.1/48/88.2/96kHz in UAC1, and 16/24/32-bit at those rates in UAC2. Checks covered both stable and unsettled buffer-water-level conditions and lasted approximately 30 seconds; exact per-check durations were not recorded.
 
 Note: During these checks, O (ring-buffer overflow discards), F (old frames discarded when the USB receive FIFO is near capacity), and U (playback output stops) all remained at zero. These counters describe how the device handled received data and do not detect losses on the host or USB bus. This is an observation on the stated setup, not a guarantee for other environments or playback conditions.
+
+</details>
 
 ---
 
