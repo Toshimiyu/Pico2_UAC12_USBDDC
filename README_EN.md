@@ -339,6 +339,9 @@ Pico2 + Pico Audio Pack (PCM5100A) + Pico Display Pack 2.0
 
 ## Display Specification (Pico Display Pack 2.0)
 
+<details>
+<summary>Show display specification</summary>
+
 At startup, the boot screen is displayed. After initialization completes, the playback screen is shown.
 After startup completes, the lower `System Ready` message is cleared after about 0.5 seconds; the upper message remains.
 
@@ -621,6 +624,8 @@ The recorded information may also be used when consulting AI services regarding 
 Note: Do not share personal information such as serial numbers.
 
 Diagnostic information is not overlaid on the playback screen.
+
+</details>
 
 ---
 

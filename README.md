@@ -319,6 +319,9 @@ Pico 2 + Pico Audio Pack（PCM5100A）+ Pico Display Pack 2.0
 
 ## 表示仕様（Pico Display Pack 2.0）
 
+<details>
+<summary>表示仕様を表示</summary>
+
 起動時に起動画面を表示し、初期化が完了すると再生画面に切り替わります。
 起動完了時は下段の`System Ready`を約0.5秒後に消去し、上段の表示は残ります。
 
@@ -567,6 +570,8 @@ U = 0
 ※シリアル番号などの個人情報は共有しないでください。
 
 再生画面には診断情報は重ねて表示されません。
+
+</details>
 
 ## 対応OS
 
