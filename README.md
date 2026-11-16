@@ -622,168 +622,6 @@ U = 0
 - 調整後のプツ音の頻度比較、OVERFLOW / UNDERFLOWの発生状況、およびフィードバック補正が上限に張り付くかは未確認です。
 - ノイズ発生時のBCLK・LRCK・DATAとDACアナログ出力の波形は未測定で、原因がホスト側・デバイス側・DAC側のどこにあるかは特定できていません。将来は録音、信号の同時観測、別端末での比較が切り分けの候補です。
 
-## USB Audio Classの選択
-
-<details>
-<summary>USB Audio Classの選択を表示</summary>
-
-次のCMake設定で、ビルド時にUAC1 / UAC2を選択します。
-
-```cmake
-USB_AUDIO_CLASS_VERSION
-```
-
-| 値 | モード |
-|----|--------|
-| 1 | UAC1 |
-| 2 | UAC2 |
-| 未指定 | UAC2 |
-
-ビルド環境がない方は、リリースノートからUAC1・UAC2それぞれのファームウェアをダウンロードして書き込み、ご使用ください。
-
-### ビルドコマンド（2026-11-01確認）
-
-リポジトリのルートディレクトリで実行してください。
-
-※ビルド時は、事前に既存の`build`フォルダーを削除してCMakeキャッシュをクリアしてください。
-
-#### UAC1ビルド
-
-```powershell
-cd <repository_directory>\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
-
-cmake --build build
-```
-
-#### UAC2ビルド
-
-```powershell
-cd <repository_directory>\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2
-
-cmake --build build
-```
-
-#### 診断ログ出力ありでUAC2ビルド
-
-```powershell
-cd <repository_directory>\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2 -DUSB_BRINGUP_LEVEL=3
-
-cmake --build build
-```
-
-診断ログ出力モードでビルドする場合だけ、CMake構成時に`-DUSB_BRINGUP_LEVEL=3`を追加してください。省略時は通常動作（レベル2）となり、仮想COMポートと診断ログ出力は無効です。
-
-設定を変更した場合は、CMakeを再構成してから再ビルドしてください。
-
-VS CodeのCMake Toolsを使用する場合は、CMakeキャッシュの `USB_AUDIO_CLASS_VERSION` を `1` または `2` に変更し、プロジェクトを再構成してください。キャッシュ値を変更しないと、以前の設定が使われます。
-
-診断ログ出力モードにする場合は、CMake構成時に`-DUSB_BRINGUP_LEVEL=3`を指定してください。指定を省略した場合の既定値は`2`で、仮想COMポートと診断ログ出力は無効です。既存のCMakeキャッシュに`3`が残っている場合は、`-DUSB_BRINGUP_LEVEL=2`を指定して再構成してください。設定変更後は再ビルドが必要です。
-
-### Windows PowerShellでのビルド
-
-PowerShellで次のエラーが表示された場合：
-
-```text
-'cmake' is not recognized as an internal or external command
-```
-
-CMakeが利用可能か確認します。
-
-```powershell
-where.exe cmake
-```
-
-結果が表示されない場合は、CMakeをインストールしてください。
-
-```powershell
-winget install Kitware.CMake
-```
-
-インストール後、PowerShellを再起動します。CMakeがインストール済みでも見つからない場合は、インストール先をPATHに追加してください。
-
-```powershell
-$env:Path += ";C:\Program Files\CMake\bin"
-```
-
-恒久的に設定するには、Windowsのユーザー環境変数PATHにCMakeのインストール先を追加します。
-
-インストールを確認します。
-
-```powershell
-cmake --version
-```
-
-バージョンが表示されたら、構成とビルドを実行します。
-
-```powershell
-cd C:\path\to\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
-
-cmake --build build
-```
-
-UAC2をビルドする場合は、`USB_AUDIO_CLASS_VERSION=1` を `USB_AUDIO_CLASS_VERSION=2` に変更してください。
-
-SDK、コンパイラー、Ninjaに関するエラーが発生した場合は、Visual Studio CodeにRaspberry Pi Pico拡張機能をインストールし、次の環境を使用してください。
-
-- Pico SDK v2.3.1
-- Toolchain 15_2_Rel1
-
-### 生成されるファームウェア
-
-ビルドが成功すると、次のUF2ファイルが生成されます。
-
-#### UAC1
-
-```text
-build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC1.uf2
-```
-
-#### UAC2
-
-```text
-build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC2.uf2
-```
-
-書き込み手順：
-
-1. BOOTSELボタンを押したままにします。
-2. Pico 2をPCに接続します。
-3. RP2350ドライブが表示されます。
-4. 生成されたUF2ファイルをドライブにコピーします。
-
-### モード仕様
-
-#### UAC1（`USB_AUDIO_CLASS_VERSION=1`）
-
-- USB Audio Class 1.0
-- PCM 16bit / 24bit
-- 44.1kHz / 48kHz / 88.2kHz / 96kHz
-
-#### UAC2（`USB_AUDIO_CLASS_VERSION=2`）
-
-- USB Audio Class 2.0
-- PCM 16bit / 24bit / 32bit
-- サンプルレート上限はFull-Speed USBの帯域幅によって異なります
-
-UAC固有のディスクリプターと制御ハンドラーは、選択したモードに応じて切り替わります。以下のモジュールは共通です。
-
-- オーディオエンジン
-- リングバッファー
-- Async Feedback
-- FFT処理
-- 表示システム
-- I²S出力
-
-</details>
-
 ## 対応DAC
 
 - Pico Audio Pack（PCM5100A）
@@ -1013,6 +851,168 @@ GPIOリソースの競合を避けるため、Pico Display PackのRGB LED（GP6�
 
 - Pico SDK v2.3.1
 - Toolchain 15_2_Rel1
+
+### USB Audio Classの選択
+
+<details>
+<summary>USB Audio Classの選択を表示</summary>
+
+次のCMake設定で、ビルド時にUAC1 / UAC2を選択します。
+
+```cmake
+USB_AUDIO_CLASS_VERSION
+```
+
+| 値 | モード |
+|----|--------|
+| 1 | UAC1 |
+| 2 | UAC2 |
+| 未指定 | UAC2 |
+
+ビルド環境がない方は、リリースノートからUAC1・UAC2それぞれのファームウェアをダウンロードして書き込み、ご使用ください。
+
+#### ビルドコマンド（2026-11-01確認）
+
+リポジトリのルートディレクトリで実行してください。
+
+※ビルド時は、事前に既存の`build`フォルダーを削除してCMakeキャッシュをクリアしてください。
+
+##### UAC1ビルド
+
+```powershell
+cd <repository_directory>\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
+
+cmake --build build
+```
+
+##### UAC2ビルド
+
+```powershell
+cd <repository_directory>\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2
+
+cmake --build build
+```
+
+##### 診断ログ出力ありでUAC2ビルド
+
+```powershell
+cd <repository_directory>\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2 -DUSB_BRINGUP_LEVEL=3
+
+cmake --build build
+```
+
+診断ログ出力モードでビルドする場合だけ、CMake構成時に`-DUSB_BRINGUP_LEVEL=3`を追加してください。省略時は通常動作（レベル2）となり、仮想COMポートと診断ログ出力は無効です。
+
+設定を変更した場合は、CMakeを再構成してから再ビルドしてください。
+
+VS CodeのCMake Toolsを使用する場合は、CMakeキャッシュの `USB_AUDIO_CLASS_VERSION` を `1` または `2` に変更し、プロジェクトを再構成してください。キャッシュ値を変更しないと、以前の設定が使われます。
+
+診断ログ出力モードにする場合は、CMake構成時に`-DUSB_BRINGUP_LEVEL=3`を指定してください。指定を省略した場合の既定値は`2`で、仮想COMポートと診断ログ出力は無効です。既存のCMakeキャッシュに`3`が残っている場合は、`-DUSB_BRINGUP_LEVEL=2`を指定して再構成してください。設定変更後は再ビルドが必要です。
+
+#### Windows PowerShellでのビルド
+
+PowerShellで次のエラーが表示された場合：
+
+```text
+'cmake' is not recognized as an internal or external command
+```
+
+CMakeが利用可能か確認します。
+
+```powershell
+where.exe cmake
+```
+
+結果が表示されない場合は、CMakeをインストールしてください。
+
+```powershell
+winget install Kitware.CMake
+```
+
+インストール後、PowerShellを再起動します。CMakeがインストール済みでも見つからない場合は、インストール先をPATHに追加してください。
+
+```powershell
+$env:Path += ";C:\Program Files\CMake\bin"
+```
+
+恒久的に設定するには、Windowsのユーザー環境変数PATHにCMakeのインストール先を追加します。
+
+インストールを確認します。
+
+```powershell
+cmake --version
+```
+
+バージョンが表示されたら、構成とビルドを実行します。
+
+```powershell
+cd C:\path\to\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
+
+cmake --build build
+```
+
+UAC2をビルドする場合は、`USB_AUDIO_CLASS_VERSION=1` を `USB_AUDIO_CLASS_VERSION=2` に変更してください。
+
+SDK、コンパイラー、Ninjaに関するエラーが発生した場合は、Visual Studio CodeにRaspberry Pi Pico拡張機能をインストールし、次の環境を使用してください。
+
+- Pico SDK v2.3.1
+- Toolchain 15_2_Rel1
+
+#### 生成されるファームウェア
+
+ビルドが成功すると、次のUF2ファイルが生成されます。
+
+##### UAC1
+
+```text
+build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC1.uf2
+```
+
+##### UAC2
+
+```text
+build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC2.uf2
+```
+
+書き込み手順：
+
+1. BOOTSELボタンを押したままにします。
+2. Pico 2をPCに接続します。
+3. RP2350ドライブが表示されます。
+4. 生成されたUF2ファイルをドライブにコピーします。
+
+#### モード仕様
+
+##### UAC1（`USB_AUDIO_CLASS_VERSION=1`）
+
+- USB Audio Class 1.0
+- PCM 16bit / 24bit
+- 44.1kHz / 48kHz / 88.2kHz / 96kHz
+
+##### UAC2（`USB_AUDIO_CLASS_VERSION=2`）
+
+- USB Audio Class 2.0
+- PCM 16bit / 24bit / 32bit
+- サンプルレート上限はFull-Speed USBの帯域幅によって異なります
+
+UAC固有のディスクリプターと制御ハンドラーは、選択したモードに応じて切り替わります。以下のモジュールは共通です。
+
+- オーディオエンジン
+- リングバッファー
+- Async Feedback
+- FFT処理
+- 表示システム
+- I²S出力
+
+</details>
 
 ## 開発の背景
 

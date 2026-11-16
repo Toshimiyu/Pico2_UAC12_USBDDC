@@ -680,213 +680,6 @@ Reducing the feedback limits tended to improve the symptoms, but the cause remai
 
 ---
 
-## USB Audio Class Selection
-
-<details>
-<summary>Show USB Audio Class selection</summary>
-
-UAC1 and UAC2 can be selected at build time using:
-
-```cmake
-USB_AUDIO_CLASS_VERSION
-```
-
-| Value | Mode |
-|---------|---------|
-| 1 | UAC1 |
-| 2 | UAC2 |
-| Not specified | UAC2 |
-
-If you don't have a build environment, download the UAC1 or UAC2 firmware from the release notes, flash it, and use it.
-
-### Build Commands (Verified: 2026-11-01)
-
-Build from the repository root directory.
-
-Note: Before building, delete the existing `build` folder to clear the CMake cache.
-
-#### UAC1 Build
-
-```powershell
-cd <repository_directory>\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
-
-cmake --build build
-```
-
-#### UAC2 Build
-
-```powershell
-cd <repository_directory>\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2
-
-cmake --build build
-```
-
-#### UAC2 Build with Diagnostic Logging
-
-```powershell
-cd <repository_directory>\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2 -DUSB_BRINGUP_LEVEL=3
-
-cmake --build build
-```
-
-To build in diagnostic logging mode, add `-DUSB_BRINGUP_LEVEL=3` when configuring CMake. If omitted, the default is normal operation (level 2), with the virtual COM port and diagnostic log output disabled.
-
-After changing the setting, re-run CMake configuration and rebuild the project.
-
-When using VS Code CMake Tools, change the CMake cache value:
-
-```text
-USB_AUDIO_CLASS_VERSION
-```
-
-to either:
-
-```text
-1
-```
-
-or
-
-```text
-2
-```
-
-and then reconfigure the project.
-
-If the cache value is not changed, the previous configuration remains active.
-
-To build in diagnostic logging mode, specify `-DUSB_BRINGUP_LEVEL=3` when configuring CMake. If omitted, the default is level `2`, with the virtual COM port and diagnostic log output disabled. If an existing CMake cache still contains `3`, pass `-DUSB_BRINGUP_LEVEL=2` when reconfiguring. Rebuild after changing the setting.
-
----
-
-### Building from Windows PowerShell
-
-If PowerShell reports:
-
-```text
-'cmake' is not recognized as an internal or external command
-```
-
-verify whether CMake is available:
-
-```powershell
-where.exe cmake
-```
-
-If no result is returned, install CMake:
-
-```powershell
-winget install Kitware.CMake
-```
-
-Restart PowerShell after installation.
-
-If CMake is already installed but not found, add the installation directory to PATH:
-
-```powershell
-$env:Path += ";C:\Program Files\CMake\bin"
-```
-
-To make the change permanent, add the CMake installation directory to the Windows user PATH environment variable.
-
-Verify installation:
-
-```powershell
-cmake --version
-```
-
-If a version number is displayed, configure and build the project:
-
-```powershell
-cd C:\path\to\Pico2_UAC12_USBDDC
-
-cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
-
-cmake --build build
-```
-
-For UAC2 builds, change:
-
-```text
-USB_AUDIO_CLASS_VERSION=1
-```
-
-to
-
-```text
-USB_AUDIO_CLASS_VERSION=2
-```
-
-If SDK, compiler, or Ninja-related errors occur, install the Raspberry Pi Pico extension for Visual Studio Code and use:
-
-- Pico SDK v2.3.1
-- Toolchain 15_2_Rel1
-
----
-
-### Generated Firmware Files
-
-Successful builds generate the following UF2 files:
-
-#### UAC1
-
-```text
-build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC1.uf2
-```
-
-#### UAC2
-
-```text
-build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC2.uf2
-```
-
-To program the device:
-
-1. Hold the BOOTSEL button.
-2. Connect Pico 2 to the PC.
-3. The RP2350 drive appears.
-4. Copy the generated UF2 file onto the drive.
-
----
-
-### Mode Specifications
-
-#### UAC1 (`USB_AUDIO_CLASS_VERSION=1`)
-
-- USB Audio Class 1.0
-- PCM 16bit / 24bit
-- 44.1kHz
-- 48kHz
-- 88.2kHz
-- 96kHz
-
-#### UAC2 (`USB_AUDIO_CLASS_VERSION=2`)
-
-- USB Audio Class 2.0
-- PCM 16bit / 24bit / 32bit
-- Sample-rate limits depend on Full-Speed USB bandwidth
-
-UAC-specific descriptors and control handlers are switched according to selected mode.
-
-The following modules are shared:
-
-- Audio Engine
-- Ring Buffer
-- Async Feedback
-- FFT Processing
-- Display System
-- I²S Output
-
-</details>
-
----
-
 ## Supported DAC
 
 - Pico Audio Pack (PCM5100A)
@@ -1138,6 +931,211 @@ Recommended Environment:
 
 - Pico SDK v2.3.1
 - Toolchain 15_2_Rel1
+
+### USB Audio Class Selection
+
+<details>
+<summary>Show USB Audio Class selection</summary>
+
+UAC1 and UAC2 can be selected at build time using:
+
+```cmake
+USB_AUDIO_CLASS_VERSION
+```
+
+| Value | Mode |
+|---------|---------|
+| 1 | UAC1 |
+| 2 | UAC2 |
+| Not specified | UAC2 |
+
+If you don't have a build environment, download the UAC1 or UAC2 firmware from the release notes, flash it, and use it.
+
+#### Build Commands (Verified: 2026-11-01)
+
+Build from the repository root directory.
+
+Note: Before building, delete the existing `build` folder to clear the CMake cache.
+
+##### UAC1 Build
+
+```powershell
+cd <repository_directory>\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
+
+cmake --build build
+```
+
+##### UAC2 Build
+
+```powershell
+cd <repository_directory>\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2
+
+cmake --build build
+```
+
+##### UAC2 Build with Diagnostic Logging
+
+```powershell
+cd <repository_directory>\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=2 -DUSB_BRINGUP_LEVEL=3
+
+cmake --build build
+```
+
+To build in diagnostic logging mode, add `-DUSB_BRINGUP_LEVEL=3` when configuring CMake. If omitted, the default is normal operation (level 2), with the virtual COM port and diagnostic log output disabled.
+
+After changing the setting, re-run CMake configuration and rebuild the project.
+
+When using VS Code CMake Tools, change the CMake cache value:
+
+```text
+USB_AUDIO_CLASS_VERSION
+```
+
+to either:
+
+```text
+1
+```
+
+or
+
+```text
+2
+```
+
+and then reconfigure the project.
+
+If the cache value is not changed, the previous configuration remains active.
+
+To build in diagnostic logging mode, specify `-DUSB_BRINGUP_LEVEL=3` when configuring CMake. If omitted, the default is level `2`, with the virtual COM port and diagnostic log output disabled. If an existing CMake cache still contains `3`, pass `-DUSB_BRINGUP_LEVEL=2` when reconfiguring. Rebuild after changing the setting.
+
+---
+
+#### Building from Windows PowerShell
+
+If PowerShell reports:
+
+```text
+'cmake' is not recognized as an internal or external command
+```
+
+verify whether CMake is available:
+
+```powershell
+where.exe cmake
+```
+
+If no result is returned, install CMake:
+
+```powershell
+winget install Kitware.CMake
+```
+
+Restart PowerShell after installation.
+
+If CMake is already installed but not found, add the installation directory to PATH:
+
+```powershell
+$env:Path += ";C:\Program Files\CMake\bin"
+```
+
+To make the change permanent, add the CMake installation directory to the Windows user PATH environment variable.
+
+Verify installation:
+
+```powershell
+cmake --version
+```
+
+If a version number is displayed, configure and build the project:
+
+```powershell
+cd C:\path\to\Pico2_UAC12_USBDDC
+
+cmake -S . -B build -DUSB_AUDIO_CLASS_VERSION=1
+
+cmake --build build
+```
+
+For UAC2 builds, change:
+
+```text
+USB_AUDIO_CLASS_VERSION=1
+```
+
+to
+
+```text
+USB_AUDIO_CLASS_VERSION=2
+```
+
+If SDK, compiler, or Ninja-related errors occur, install the Raspberry Pi Pico extension for Visual Studio Code and use:
+
+- Pico SDK v2.3.1
+- Toolchain 15_2_Rel1
+
+---
+
+#### Generated Firmware Files
+
+Successful builds generate the following UF2 files:
+
+##### UAC1
+
+```text
+build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC1.uf2
+```
+
+##### UAC2
+
+```text
+build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC2.uf2
+```
+
+To program the device:
+
+1. Hold the BOOTSEL button.
+2. Connect Pico 2 to the PC.
+3. The RP2350 drive appears.
+4. Copy the generated UF2 file onto the drive.
+
+---
+
+#### Mode Specifications
+
+##### UAC1 (`USB_AUDIO_CLASS_VERSION=1`)
+
+- USB Audio Class 1.0
+- PCM 16bit / 24bit
+- 44.1kHz
+- 48kHz
+- 88.2kHz
+- 96kHz
+
+##### UAC2 (`USB_AUDIO_CLASS_VERSION=2`)
+
+- USB Audio Class 2.0
+- PCM 16bit / 24bit / 32bit
+- Sample-rate limits depend on Full-Speed USB bandwidth
+
+UAC-specific descriptors and control handlers are switched according to selected mode.
+
+The following modules are shared:
+
+- Audio Engine
+- Ring Buffer
+- Async Feedback
+- FFT Processing
+- Display System
+- I²S Output
+
+</details>
 
 ---
 
