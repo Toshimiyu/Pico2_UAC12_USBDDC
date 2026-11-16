@@ -559,9 +559,12 @@ U = 0
 - Windows 11（26H2で動作確認済み。Foobar2000でWASAPIモードで再生するときは、音源のサンプリングレートとWindows11のサンプリングレートを合わせてから再生を行ってください。ASIO4ALLやASIOドライバー等の場合は、サンプリングレートが異なっていても正常に再生されます。ASIO4ALL2.22で確認済み。）
 - Android 16（Sony XQ-ES44スマートフォン。有償版Onkyo HF Player v2.15.2のUSBドライバーとUAC1で動作確認）
 
-**V2.1の対応範囲：** AndroidではUAC1ビルドを使用し、Onkyo HF PlayerのUSBドライバーを選択してください。UAC2ビルドはWindows向けです。HF Playerの独自ドライバーではUAC2を使用できません。
+### 仕様上の注意点（V2.1）
 
-Output Terminalを`0x0602`にした構成は、確認したAndroid標準ドライバーでは認識されません。Android標準出力を使う他のプレーヤーは対応対象外です。HF Playerのドライバーの将来の更新による動作変化は保証できません。
+- UAC1/UAC2ともOutput Terminalは`0x0602`（Digital Audio Interface）です。確認したAndroid標準ドライバーでは認識されず、OS標準出力を使う他のプレーヤーは対応対象外です。
+- AndroidではUAC1ビルドとOnkyo HF PlayerのUSBドライバーを使用してください。HF Playerの独自ドライバーはUAC2に対応していないため、UAC2ビルドはWindows向けです。
+- HF Playerの独自ドライバーが利用できる理由は未確定です。アプリやドライバーの更新によって、将来動作が変わる可能性があります。
+- `bcdDevice`はUAC1が`0x0303`、UAC2が`0x0313`です。従来の記述子との識別を目的として更新していますが、Windowsに古いデバイス情報が残る場合があります。
 
 ※ Android 16（Sony XQ-ES44）接続時のUSBテスター実測値は、4.972 V・0.140 A（約0.696 W）です。
 

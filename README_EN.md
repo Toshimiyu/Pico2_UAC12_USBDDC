@@ -618,9 +618,12 @@ Diagnostic information is not overlaid on the playback screen.
 - Windows 11 (verified on Windows 11 26H2. When playing in WASAPI mode with Foobar2000, match the source sample rate to the Windows 11 sample rate before playback. With ASIO4ALL or other ASIO drivers, playback works normally even if the sample rates differ. Verified with ASIO4ALL 2.22.)
 - Android 16 (verified on a Sony XQ-ES44 smartphone with the paid Onkyo HF Player v2.15.2 USB driver and UAC1)
 
-**V2.1 support scope:** On Android, use the UAC1 build and select Onkyo HF Player's USB driver. The UAC2 build is intended for Windows. HF Player's proprietary driver does not support UAC2.
+### Specification Notes (V2.1)
 
-The tested Android standard driver does not recognize the `0x0602` Output Terminal configuration. Other players using Android's standard audio output are outside the support scope. Future HF Player driver updates may change its behavior.
+- Both UAC1 and UAC2 use Output Terminal `0x0602` (Digital Audio Interface). The tested Android standard driver does not recognize this configuration, and other players using Android's standard audio output are outside the support scope.
+- On Android, use the UAC1 build and Onkyo HF Player's USB driver. HF Player's proprietary driver does not support UAC2, so the UAC2 build is intended for Windows.
+- Why HF Player's proprietary driver works with this configuration is unconfirmed. Future app or driver updates may change its behavior.
+- `bcdDevice` is `0x0303` for UAC1 and `0x0313` for UAC2. These values were updated to distinguish the descriptors from earlier versions, but Windows may retain old device information.
 
 Note: With the Android 16 (Sony XQ-ES44) device connected, a USB tester measured 4.972 V and 0.140 A (approximately 0.696 W).
 
