@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "hardware/clocks.h"
 #include "hardware/spi.h"
 #include "tusb.h"
 #include "common.h"
@@ -36,6 +37,8 @@
 #define G_UAC_X 136
 #define G_FORMAT_X 180
 #define G_FORMAT_Y 30
+#define G_VERSION_X G_UAC_X
+#define G_VERSION_Y 42
 #define G_FORMAT_CHARS 14
 
 #define G_FRAME_X 40
@@ -49,8 +52,9 @@
 #define G_IN_H (G_FRAME_H - 2)
 
 #define G_PCT_X   48
-#define G_CURRENT_X 104
+#define G_CURRENT_X 180
 #define G_SIZE_X  160
+#define G_MIN_X G_UAC_X
 #define G_PKT_X   248
 #define G_STATE_X 56
 
@@ -356,8 +360,8 @@ static char shown_pkt[6]  = "     ";
 static char shown_current[6] = "     ";
 #endif
 static char shown_state[5] = "    ";
-static char shown_usb_status[8] = "       ";
 static char shown_format[G_FORMAT_CHARS + 1] = "              ";
+static char shown_clock[5] = "    ";
 static char shown_diag[G_DIAG_FIELDS][G_DIAG_CHARS + 1];
 static uint16_t shown_diag_color[G_DIAG_FIELDS][G_DIAG_CHARS];
 static char shown_log[G_LOG_ROWS][G_LOG_COLS][G_LOG_CHARS + 1];
@@ -421,7 +425,6 @@ static void draw_log_header(void)
 	q_rect(8, 108, 304, 10, C_BG);
 	queue_text_at(8, 108, history_mode ? "RECENT AUDIO HISTORY" : "USB COMMUNICATION LOG",
 				  history_mode ? 20 : 21, C_LABEL);
-	memset(shown_usb_status, ' ', sizeof(shown_usb_status) - 1u);
 }
 
 static inline uint16_t target_px(void)
@@ -519,12 +522,12 @@ void debug_gauge_init(void)
 #else
 	queue_text_at(G_UAC_X, G_FORMAT_Y, "UAC2", 4, C_TITLE);
 #endif
+	queue_text_at(G_VERSION_X, G_VERSION_Y, "v" FW_VERSION,
+				  (int)sizeof("v" FW_VERSION) - 1, C_TITLE);
 	queue_text_at(8, G_HOST_Y, "HOST", 4, C_LABEL);
 	queue_text_at(8, G_FB_Y, "FB", 2, C_LABEL);
 	queue_text_at(8, G_FRAME_Y + 2, "RING", 4, C_LABEL);
 	queue_text_at(8, G_TEXT_Y, "LEVEL", 5, C_LABEL);
-	queue_text_at(128, G_TEXT_Y, "MIN", 3, C_LABEL);
-	queue_text_at(216, G_TEXT_Y, "MAX", 3, C_LABEL);
 	q_rect(8, 102, 304, 1, C_FRAME);
 	queue_text_at(8, 108, "USB COMMUNICATION LOG", 21, C_LABEL);
 	q_rect(8, 214, 304, 1, C_FRAME);
@@ -549,8 +552,8 @@ void debug_gauge_init(void)
     memcpy(shown_current, "     ", 6);
 #endif
     memcpy(shown_state, "    ",     5);
-    memcpy(shown_usb_status, "       ", 8);
     memcpy(shown_format, "              ", G_FORMAT_CHARS + 1);
+    memcpy(shown_clock, "    ", sizeof(shown_clock));
     memset(shown_diag, ' ', sizeof(shown_diag));
     memset(shown_diag_color, 0, sizeof(shown_diag_color));
     memset(shown_log, ' ', sizeof(shown_log));
@@ -706,20 +709,6 @@ static void refresh_audio_history(void)
 
 static void refresh(float level, usb_audio_state_t st)
 {
-	char usb_status[] = "U:N C:N";
-	usb_status[2] = tud_mounted() ? 'Y' : 'N';
-#if USB_CDC_ENABLED
-	usb_status[6] = cdc_diagnostics_is_connected() ? 'Y' : 'N';
-#else
-	usb_status[6] = '-';
-#endif
-	for (int i = 0; i < 7; i++)
-	{
-		if (usb_status[i] != shown_usb_status[i] &&
-			q_char(192 + 8 * i, 108, usb_status[i], C_LABEL))
-			shown_usb_status[i] = usb_status[i];
-	}
-
 	// --- bar ---
 	int fill = (int)(level * (float)G_IN_W / (float)SIZE_AUDIO_RING_FRAMES + 0.5f);
 	if (fill < 0)
@@ -826,6 +815,21 @@ static void refresh(float level, usb_audio_state_t st)
 		}
 	}
 
+	const uint32_t sys_clock_hz = clock_get_hz(clk_sys);
+	const char *clock_text = "D???";
+	if (sys_clock_hz == SYS_CLOCK_KHZ_44K * 1000u)
+		clock_text = "D336";
+	else if (sys_clock_hz == SYS_CLOCK_KHZ_48K * 1000u)
+		clock_text = "D360";
+	for (int i = 0; i < 4; i++)
+	{
+		if (clock_text[i] != shown_clock[i] &&
+			q_char(G_UAC_X + 8 * i, G_VERSION_Y + 12, clock_text[i], C_TITLE))
+		{
+			shown_clock[i] = clock_text[i];
+		}
+	}
+
 /* ===== S/N display ===== */
 
     char size_text[6];
@@ -843,7 +847,7 @@ static void refresh(float level, usb_audio_state_t st)
         if (gnow > 9999)
             gnow = 9999;
         char current_text[6];
-        snprintf(current_text, sizeof(current_text), "c%04ld", (long)gnow);
+        snprintf(current_text, sizeof(current_text), "@%04ld", (long)gnow);
         for (int i = 0; i < 5; i++)
         {
             if (current_text[i] != shown_current[i] &&
@@ -877,7 +881,7 @@ static void refresh(float level, usb_audio_state_t st)
         if (size_text[i] != shown_size[i])
         {
             q_char(
-                G_SIZE_X + 8 * i,
+                (GAUGE_SHOW_MINMAX ? G_MIN_X : G_SIZE_X) + 8 * i,
                 G_TEXT_Y,
                 size_text[i],
                 C_LABEL);
@@ -1195,7 +1199,7 @@ uint32_t debug_gauge_buffer_bytes(void)
 	return (uint32_t)(
 		sizeof(fill_chunk) + sizeof(queue) + sizeof(shown_pct) + sizeof(shown_host) +
 		sizeof(shown_fb) + sizeof(shown_size) + sizeof(shown_pkt) + sizeof(shown_state) +
-		sizeof(shown_usb_status) +
+		sizeof(shown_clock) +
 #if GAUGE_SHOW_MINMAX
 		sizeof(shown_current) +
 #endif
