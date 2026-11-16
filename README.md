@@ -582,7 +582,7 @@ U = 0
 
 - UAC1/UAC2ともOutput Terminalは`0x0602`（Digital Audio Interface）です。確認したAndroid標準ドライバーでは認識されず、OS標準出力を使う他のプレーヤーは対応対象外です。
 - AndroidではUAC1ビルドとOnkyo HF Playerを使い、HF PlayerのUSBドライバーを使用してください。HF Playerの独自ドライバーはUAC2に対応していないため、UAC2ビルドはWindows向けです。
-- HF Playerの独自ドライバーが利用できる理由は未確定です。アプリやドライバーの更新によって、将来動作が変わる可能性があります。
+- HF Playerの独自ドライバーが利用できる理由は未確認です。アプリやドライバーの更新によって、将来動作が変わる可能性があります。
 - `bcdDevice`はUAC1が`0x0303`、UAC2が`0x0313`です。従来の記述子との識別を目的として更新していますが、Windowsに古いデバイス情報が残る場合があります。
 
 ※ Android 16（Sony XQ-ES44）接続時のUSBテスター実測値は、4.972 V・0.140 A（約0.696 W）です。
@@ -623,6 +623,9 @@ U = 0
 - ノイズ発生時のBCLK・LRCK・DATAとDACアナログ出力の波形は未測定で、原因がホスト側・デバイス側・DAC側のどこにあるかは特定できていません。将来は録音、信号の同時観測、別端末での比較が切り分けの候補です。
 
 ## USB Audio Classの選択
+
+<details>
+<summary>USB Audio Classの選択を表示</summary>
 
 次のCMake設定で、ビルド時にUAC1 / UAC2を選択します。
 
@@ -778,6 +781,8 @@ UAC固有のディスクリプターと制御ハンドラーは、選択した�
 - FFT処理
 - 表示システム
 - I²S出力
+
+</details>
 
 ## 対応DAC
 

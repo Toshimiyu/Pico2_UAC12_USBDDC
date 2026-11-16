@@ -682,6 +682,9 @@ Reducing the feedback limits tended to improve the symptoms, but the cause remai
 
 ## USB Audio Class Selection
 
+<details>
+<summary>Show USB Audio Class selection</summary>
+
 UAC1 and UAC2 can be selected at build time using:
 
 ```cmake
@@ -879,6 +882,8 @@ The following modules are shared:
 - FFT Processing
 - Display System
 - I²S Output
+
+</details>
 
 ---
 
