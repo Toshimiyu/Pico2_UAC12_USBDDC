@@ -14,7 +14,7 @@ The USB audio subsystem has been redesigned around TinyUSB, allowing USB Audio C
 - TinyUSB-based USB audio layer
 - Common Audio State / RingBuffer / Feedback architecture
 - Improved diagnostic screen with buffer monitoring
-- USB event logging (up to 64 events)
+- USB event logging (up to 64 events, or 256 with CDC enabled)
 - USB CDC diagnostic CSV logging alongside UAC1/UAC2
 - Enhanced stream restart and sample-rate switching handling
 - Removal of unused GPIO debug functions
@@ -60,6 +60,15 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 ---
 
 ## Change History
+
+### V2.1
+
+- **Specification change:** Change the UAC1/UAC2 Output Terminal from `0x0304` (Desktop Speaker) to `0x0602` (Digital Audio Interface). Use the UAC1 build and Onkyo HF Player's USB driver on Android; the UAC2 build is intended for Windows.
+- Update UAC1/UAC2 `bcdDevice` to `0x0303`/`0x0313`, respectively
+- Display O/F/S/C/U with four digits and add the current ring level `c` to the Diagnostics screen
+- Add feedback-control values and USB OUT receive age to CDC samples, plus a detailed UNDERFLOW event row
+- Emit USB event history over CDC and show USB configuration and CDC connection status on the Diagnostics screen
+- Expand USB event history from 64 to 256 entries when CDC is enabled and fix the first periodic row's elapsed time after CDC connection
 
 ### V2.0
 
@@ -338,7 +347,9 @@ On the diagnostic screen:
 - A+B : Toggle between USB events and recent audio-state history
 - Hold Y for 3 seconds : Reset diagnostic counters and the USB event log (a countdown is shown while holding)
 
-USB event logging starts at boot, and the latest 64 events remain available on the Diagnostics screen. It records events such as USB bus resets/disconnects, device/configuration/string descriptor requests, configuration mount/unmount, and UAC control requests. This is event-driven logging, not a periodic playback-state log, so the display does not change while playback continues without a new event. Track changes and other USB audio state transitions may add new entries. Holding Y for 3 seconds clears the collected diagnostic values and USB event log; logging resumes with subsequent events. The O/F/S/C/U event counters are updated when events occur regardless of the active screen. Periodic diagnostic statistics, such as buffer levels and processing intervals, are collected while the Diagnostics screen is active or CDC is connected. Collected diagnostic values are retained when leaving the screen, and collection resumes from those values when it is reopened. The playback screen continues audio playback, FFT, and bit-depth/sample-rate display.
+USB event logging starts at boot, and the latest 64 events (256 in CDC-enabled builds) remain available on the Diagnostics screen. It records events such as USB bus resets/disconnects, device/configuration/string descriptor requests, configuration mount/unmount, and UAC control requests. This is event-driven logging, not a periodic playback-state log, so the display does not change while playback continues without a new event. Track changes and other USB audio state transitions may add new entries. Holding Y for 3 seconds clears the collected diagnostic values and USB event log; logging resumes with subsequent events. The O/F/S/C/U event counters are updated when events occur regardless of the active screen. Periodic diagnostic statistics, such as buffer levels and processing intervals, are collected while the Diagnostics screen is active or CDC is connected. Collected diagnostic values are retained when leaving the screen, and collection resumes from those values when it is reopened. The playback screen continues audio playback, FFT, and bit-depth/sample-rate display.
+
+In the log header, `U:Y` means USB is configured and `U:N` means it is not configured. `C:Y` means USB is configured, not suspended, and CDC DTR is asserted; `C:N` means at least one of those conditions is false. `C:-` indicates a build without CDC. DTR depends on the host's settings, so `C:N` alone does not identify a fault or why a COM port cannot be opened. History is lost on power-off; photograph the screen before unplugging USB if needed.
 
 #### Playback Start Log screen
 
@@ -354,6 +365,12 @@ The diagnostic virtual COM port is controlled by the CMake option `USB_BRINGUP_L
 
 A normal row is emitted every 100 ms with columns `MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS`. `USB_MODE` is `UAC1` or `UAC2` according to the build configuration. `HOST_RATE` is estimated from received frames over a 250 ms window. `HF_DIFF_NOW` is the signed `HOST_RATE - FEEDBACK_RATE` when both rates are valid; it is blank if either rate is zero (not yet measured or unavailable). `MAX_HF_DIFF_SESSION` is the maximum absolute difference during the CDC session; `MAX_HF_DIFF_STREAM` is the maximum during the current STREAMING period. The latter excludes estimation windows overlapping the first second of STREAMING and remains zero until a valid measurement is available. `RING_MIN`/`RING_MAX` are the minimum/maximum ring levels observed during each log interval; `RING_AVG` is the mean of samples taken at approximately 1 ms intervals. State transitions use `STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE` rows; anomalies use `ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`, including state, sample rate, ring fill, and frames in the DMA pool. Transition events are recorded on Core0 when the state changes, giving finer timing than periodic samples. The device does not generate calendar time; add it in the PC measurement software if needed. Periodic diagnostic statistics are collected even when the Diagnostics screen is not open while CDC is connected.
 
+The normal row ends with three additional columns: `FB_LEVEL,FB_INTEG_HZ,USB_OUT_AGE_US`. These are the filtered feedback ring level, integrator value in Hz, and time in microseconds since the last USB OUT receive callback. The age is blank before a receive timestamp is available or outside STREAMING. `USB_GAP_MAX_US` is the largest previously observed receive interval, not the length of an ongoing gap. CSV analysis tools must account for the added columns.
+
+At underflow detection, a separate `UNDERFLOW,MS,RING,DMA_POOL,RING_POOL,HOST_RATE,FEEDBACK_RATE,FB_LEVEL,FB_INTEG_HZ,USB_GAP_MAX_US,USB_OUT_AGE_US` row captures values before the state changes. DMA pool fill is an upper bound including the playing block; the levels are not an atomic measurement. A full event queue reports lost records via `EVENT_QUEUE_DROPPED`.
+
+USB events are emitted as `USB_EVENT,UPTIME_US32,GENERATION,OVERWRITTEN_BEFORE,EVENT`. When the COM port connects, the latest 256 retained events are replayed oldest first, followed by new events. Older events are overwritten if the capacity is exceeded. `UPTIME_US32` is the low 32 bits of uptime in microseconds and wraps about every 71.6 minutes; `GENERATION` changes when diagnostics are reset. `OVERWRITTEN_BEFORE` counts unsent events overwritten before that row. Unsent transmit FIFO data is lost on CDC disconnect. This is an event log, not a capture of all USB packets.
+
 Despite their names, `USBBUF_CAPACITY` and `USBBUF_FREE_*` describe audio ring capacity and free space, not the TinyUSB receive FIFO.
 
 The 32 KiB CDC transmit FIFO retains logs during temporary PC read stalls. If the FIFO runs out of space during a longer stall, periodic rows are dropped and reported as `LOG_ROWS_DROPPED` when transmission resumes. Ring, LCD, and FFT statistics in the next periodic row accumulate since the last successfully queued periodic row. Unsent FIFO data is discarded when CDC disconnects. This FIFO uses RAM only in CDC-enabled builds and is separate from the audio buffer.
@@ -367,6 +384,16 @@ Normal playback starts or resumes after the greater of approximately 6 ms of aud
 The ring holds 4096 stereo frames, with a feedback target of 3072 frames (75%). The normal feedback correction limit is 100 ppm; when the filtered level falls more than 128 frames below the target, the limit increases progressively, reaching 1000 ppm at a deficit of 512 frames or more. During buffering, the request adds 500 ppm of the nominal sample rate to the reference output rate. These are configuration values and do not guarantee that the host follows them.
 
 Audio-state history is recorded about every 100 ms during playback. When an anomaly is detected, the approximately 4.8 seconds before and 1.6 seconds after it are retained as a frozen history for review. Detected anomalies are added to the USB log as red `E` entries: `01` buffer underflow, `02` overflow/discard, `03` old data discarded when the USB receive FIFO is near capacity, `04` USB bus reset/disconnect, `05` playback output stop, `06` Core0 loop interval overrun, `07` Core1 loop interval overrun, `08` USB OUT packet interval of at least 3 ms, `09` PIO TX FIFO stall, `0A` DMA AHB transfer error, `0B` invalid PCM format, `0C` invalid PCM frame boundary, and `0D` click candidate. Click candidates can also be normal audio. These events also record state, rate, ring fill, and DMA-pool level in the CDC log. PIO stall monitoring starts 10 ms after output begins. Each history entry shows uptime seconds, audio state, ring-buffer level, and DMA-pool level.
+
+##### Hardware Log Checks (During V2.1 Development)
+
+The following logs were captured with CDC-enabled builds (`USB_BRINGUP_LEVEL=3`). These are individual short tests, not guarantees for every host or playback condition. The host OS and playback software used for the tests after the fix have not been confirmed.
+
+- UAC1: A CDC session of about 2 minutes 40 seconds included 96 kHz/24-bit and 48 kHz/24-bit. The first row had `MS=0`; the recorded `UNDERFLOW_COUNT` stayed at zero, with no `FIFO_TRIM` or DMA silence-substitution rows.
+- UAC2: A CDC session of about 2 minutes included 192 kHz/16-bit and 176.4 kHz/16-bit. The first row had `MS=0`; the recorded `UNDERFLOW_COUNT` stayed at zero, with no `FIFO_TRIM` or DMA silence-substitution rows.
+- In a separate UAC2 test, 141 events preceding the COM connection were retained from the initial `J0000 +` event and emitted with `OVERWRITTEN_BEFORE=0`. In another test exceeding capacity, 256 events were emitted and 244 overwritten events were reported.
+
+No UNDERFLOW occurred in these logs, so hardware output of the detailed UNDERFLOW row has not been verified. Retaining more than 64 events on UAC1, and simultaneous CDC capture and long-duration testing on Android, also remain unverified. An absence of recorded anomalies does not guarantee click-free playback or long-term stability.
 
 ### Playback Screen
 
@@ -445,9 +472,9 @@ The PI controller continuously adjusts USB Feedback to compensate for small fluc
 
 As a result, the buffer level normally exhibits small movements around the target level rather than remaining perfectly stationary.
 
-##### MIN / MAX
+##### Current / MIN / MAX
 
-Minimum and maximum buffer levels recorded during playback.
+`c` is the current ring level; `n` and `x` are the minimum and maximum recorded during playback.
 
 Unit:
 
@@ -472,6 +499,8 @@ The right side of the diagnostic screen displays processing statistics.
 | b | Maximum Core1 processing interval (µs) |
 | T | DMA tail-block output count |
 
+O/F/S/C/U are displayed with four digits and values above 9999 are shown as 9999.
+
 O/F/S/C/U are incremented when their events occur, regardless of the active screen, and show counts accumulated since reset. T counts DMA tail-block output conditions, but is incremented only while diagnostics are enabled and audio is streaming. Periodic measurements such as a/b and buffer levels are also collected only while the Diagnostics screen is active.
 
 For stable operation:
@@ -493,7 +522,7 @@ The bottom area displays USB communication events.
 Features:
 
 - 3 columns × 8 rows
-- Up to 64 events stored
+- Up to 64 events stored (256 with CDC enabled)
 - Newest event at upper-left
 - Oldest event at lower-right
 
@@ -511,6 +540,8 @@ The USB log is event-driven, not periodic. Holding Y for 3 seconds clears the di
 | Symbol | Meaning |
 |---------|---------|
 | M | USB Mount |
+| J | Initial audio state during USB initialization (IDLE) |
+| P | CDC connection status change (01: USB configured, not suspended and DTR asserted; 00: otherwise) |
 | A | Host request for Audio Streaming Interface Alt=0 |
 | I | Host request for Audio Streaming Interface Alt>0 |
 | O | `usb_audio_stream_open()` |
@@ -545,7 +576,7 @@ Failure
 
 If playback stops or audio dropouts occur, capture the diagnostic screen immediately if possible.
 
-The USB event log stores up to the most recent 64 events.
+The USB event log stores up to the most recent 64 events (256 with CDC enabled).
 
 Please record:
 
@@ -585,11 +616,11 @@ Diagnostic information is not overlaid on the playback screen.
 ## Supported Operating Systems
 
 - Windows 11 (verified on Windows 11 26H2. When playing in WASAPI mode with Foobar2000, match the source sample rate to the Windows 11 sample rate before playback. With ASIO4ALL or other ASIO drivers, playback works normally even if the sample rates differ. Verified with ASIO4ALL 2.22.)
-- Android 16 (verified on a Sony XQ-ES44 smartphone with the paid version of Onkyo HF Player v2.15.2 and Foobar2000 for Android using the OS standard audio driver)
+- Android 16 (verified on a Sony XQ-ES44 smartphone with the paid Onkyo HF Player v2.15.2 USB driver and UAC1)
 
-Onkyo HF Player supports UAC1 mode only. This project has been verified with HF Player in UAC1 mode on the Android device listed above.
+**V2.1 support scope:** On Android, use the UAC1 build and select Onkyo HF Player's USB driver. The UAC2 build is intended for Windows. HF Player's proprietary driver does not support UAC2.
 
-When not using Onkyo HF Player's proprietary driver and using the Android standard driver (e.g. with Foobar2000), normal operation has been verified in both UAC1 and UAC2 modes on the Sony XQ-ES44. However, after using Onkyo HF Player's proprietary driver, disconnect and reconnect the USB connector once before switching to the Android standard driver so that Android can recognize the device correctly.
+The tested Android standard driver does not recognize the `0x0602` Output Terminal configuration. Other players using Android's standard audio output are outside the support scope. Future HF Player driver updates may change its behavior.
 
 Note: With the Android 16 (Sony XQ-ES44) device connected, a USB tester measured 4.972 V and 0.140 A (approximately 0.696 W).
 
@@ -605,7 +636,7 @@ On November 13, 2026, playback was observed on a Sony XQ-ES44 running Android 16
 - Turning DSEE Ultimate off in the Music app greatly reduced click frequency, but intermittent clicks and brief muddy-sounding audio remained.
 - The diagnostic screen showed O/F/S/C/U at zero and no anomaly events. This does not rule out every kind of audio problem.
 
-Reducing the feedback limits tended to improve the symptoms, but the cause remains unconfirmed. The roles of the app, audio effects, and feedback control need further investigation. Foobar2000 and disabling DSEE Ultimate are possible workarounds. Long-term stability with these settings has not been verified; overly narrow correction limits can allow the ring level to drift and cause dropouts.
+Reducing the feedback limits tended to improve the symptoms, but the cause remains unconfirmed. The roles of the app, audio effects, and feedback control need further investigation. Foobar2000 and disabling DSEE Ultimate were possible workarounds at the time; Android's standard driver is outside the V2.1 support scope. Long-term stability with these settings has not been verified; overly narrow correction limits can allow the ring level to drift and cause dropouts.
 
 #### Status After the Current Adjustments
 
@@ -1055,7 +1086,7 @@ The Pico Display Pack RGB LED is intentionally kept off; its active-low channels
 
 ## Build and Usage
 
-Note: Before building, delete the existing `build` folder to clear the cache.
+Note: When switching between UAC1 and UAC2, delete the existing `build` folder and reconfigure to avoid stale objects. The Device Descriptor uses `bcdDevice` `0x0303` for UAC1 and `0x0313` for UAC2.
 
 1. Connect all hardware through the daughterboard.
 2. Install the Raspberry Pi Pico Extension for Visual Studio Code.
@@ -1116,7 +1147,7 @@ The verified test system was equipped with a heatsink during evaluation.
 
 - Android 16
 - Onkyo HF Player v2.15.2
-- Foobar2000 for Android v2.26.1 (ARM, OS standard audio driver)
+- Foobar2000 for Android v2.26.1 (ARM, OS standard audio driver; tested before V2.1)
 
 ---
 

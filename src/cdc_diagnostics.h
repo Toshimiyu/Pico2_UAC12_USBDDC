@@ -38,6 +38,7 @@ void cdc_diagnostics_init(void);
 bool cdc_diagnostics_is_connected(void);
 bool cdc_diagnostics_is_active(void);
 void cdc_diagnostics_log_anomaly(uint8_t code, const char *detail_name, uint32_t detail_value);
+void cdc_diagnostics_log_underflow(const underflow_snapshot_t *snapshot);
 void cdc_diagnostics_log_state_change(usb_audio_state_t previous_state, usb_audio_state_t state, bool session_start);
 void cdc_diagnostics_trace_state(usb_audio_state_t previous_state, usb_audio_state_t state);
 void cdc_diagnostics_silence_block(uint32_t frames);

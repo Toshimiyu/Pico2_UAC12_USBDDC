@@ -91,6 +91,28 @@ typedef struct
 	bool output_active;
 } usb_audio_history_sample_t;
 
+typedef struct
+{
+	uint32_t timestamp_us;
+	int32_t level;
+	int32_t dma_pool;
+	int32_t ring_pool;
+	uint32_t host_rate_hz;
+	uint32_t feedback_hz;
+	float fb_level_f;
+	float fb_integ_hz;
+	uint32_t usb_gap_max_us;
+	uint32_t usb_out_age_us;
+	bool usb_out_age_valid;
+} underflow_snapshot_t;
+
+typedef struct
+{
+	uint32_t generation;
+	uint32_t next;
+	bool initialized;
+} usb_audio_event_cursor_t;
+
 // ---- Application API (main.c) -----------------------------------------------
 // Initialise TinyUSB and publish the UAC2 device (name kept for main.c compatibility)
 extern void usb_sound_card_init(void);
@@ -114,6 +136,10 @@ extern void usb_audio_stream_close(void);				 // AS interface alt 0 / unmount
 
 uint32_t usb_audio_get_host_rate_hz(void);
 uint32_t usb_audio_get_feedback_hz(void);
+float usb_audio_get_feedback_level(void);
+float usb_audio_get_feedback_integrator_hz(void);
+bool usb_audio_get_out_age_us(uint32_t *age_us);
+const underflow_snapshot_t *usb_audio_get_last_underflow_snapshot(void);
 uint32_t usb_audio_get_feedback_limit_hz(void);
 uint32_t usb_audio_get_packets_per_sec(void);
 uint32_t usb_audio_get_avg_packet_bytes(void);
@@ -122,6 +148,8 @@ bool usb_audio_get_history_sample(uint32_t age, usb_audio_history_sample_t *samp
 void usb_audio_get_event(uint32_t age, char out[8]);
 uint32_t usb_audio_get_event_time_us(uint32_t age); // time_us_32() stamp of the same event (0 = none)
 bool usb_audio_get_event_entry(uint32_t age, char out[8], uint32_t *timestamp_us);
+bool usb_audio_get_next_event(usb_audio_event_cursor_t *cursor, char out[8],
+							 uint32_t *timestamp_us, uint32_t *lost);
 void usb_audio_record_event(char kind, uint8_t a, uint8_t b, uint8_t c, bool ok, bool has_c);
 void usb_audio_log_anomaly(uint8_t code, uint8_t detail,
 						   const char *detail_name, uint32_t detail_value);

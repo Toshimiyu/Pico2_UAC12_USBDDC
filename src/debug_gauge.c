@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
+#include "tusb.h"
 #include "common.h"
 #include "transmit_to_dac.h"
 #include "usb_device_control.h"
@@ -48,6 +49,7 @@
 #define G_IN_H (G_FRAME_H - 2)
 
 #define G_PCT_X   48
+#define G_CURRENT_X 104
 #define G_SIZE_X  160
 #define G_PKT_X   248
 #define G_STATE_X 56
@@ -91,7 +93,7 @@
 #define GAUGE_SHOW_MINMAX (1)
 #endif
 
-// Diagnostics counters, clipped to 3 digits:
+// O/F/S/C/U counters are clipped to 4 digits; a/b show loop gaps and T tail blocks.
 //   O ring-overflow drop  F FIFO-resync drop  S dropped while switching  C cleared by restart / forced stop
 //   U underruns while STREAMING   a / b longest main-loop gap [us] of Core0 / Core1 (since STREAMING)   T lone tail blocks
 // Healthy playback: O, F, U, T stay 0 (green); S and C grow by design at every rate change / (re)open.
@@ -350,7 +352,11 @@ static char shown_host[8]  = "       ";
 static char shown_fb[8]    = "       ";
 static char shown_size[6] = "     ";
 static char shown_pkt[6]  = "     ";
+#if GAUGE_SHOW_MINMAX
+static char shown_current[6] = "     ";
+#endif
 static char shown_state[5] = "    ";
+static char shown_usb_status[8] = "       ";
 static char shown_format[G_FORMAT_CHARS + 1] = "              ";
 static char shown_diag[G_DIAG_FIELDS][G_DIAG_CHARS + 1];
 static uint16_t shown_diag_color[G_DIAG_FIELDS][G_DIAG_CHARS];
@@ -415,6 +421,7 @@ static void draw_log_header(void)
 	q_rect(8, 108, 304, 10, C_BG);
 	queue_text_at(8, 108, history_mode ? "RECENT AUDIO HISTORY" : "USB COMMUNICATION LOG",
 				  history_mode ? 20 : 21, C_LABEL);
+	memset(shown_usb_status, ' ', sizeof(shown_usb_status) - 1u);
 }
 
 static inline uint16_t target_px(void)
@@ -538,7 +545,11 @@ void debug_gauge_init(void)
     memcpy(shown_fb,    "       ",   8);
     memcpy(shown_size,  "    ",     5);
     memcpy(shown_pkt,   "    ",     5);
+#if GAUGE_SHOW_MINMAX
+    memcpy(shown_current, "     ", 6);
+#endif
     memcpy(shown_state, "    ",     5);
+    memcpy(shown_usb_status, "       ", 8);
     memcpy(shown_format, "              ", G_FORMAT_CHARS + 1);
     memset(shown_diag, ' ', sizeof(shown_diag));
     memset(shown_diag_color, 0, sizeof(shown_diag_color));
@@ -695,6 +706,20 @@ static void refresh_audio_history(void)
 
 static void refresh(float level, usb_audio_state_t st)
 {
+	char usb_status[] = "U:N C:N";
+	usb_status[2] = tud_mounted() ? 'Y' : 'N';
+#if USB_CDC_ENABLED
+	usb_status[6] = cdc_diagnostics_is_connected() ? 'Y' : 'N';
+#else
+	usb_status[6] = '-';
+#endif
+	for (int i = 0; i < 7; i++)
+	{
+		if (usb_status[i] != shown_usb_status[i] &&
+			q_char(192 + 8 * i, 108, usb_status[i], C_LABEL))
+			shown_usb_status[i] = usb_status[i];
+	}
+
 	// --- bar ---
 	int fill = (int)(level * (float)G_IN_W / (float)SIZE_AUDIO_RING_FRAMES + 0.5f);
 	if (fill < 0)
@@ -809,8 +834,22 @@ static void refresh(float level, usb_audio_state_t st)
 #if GAUGE_SHOW_MINMAX
     {
         const usb_audio_stats_t *gs = usb_audio_get_stats();
+        int32_t gnow = gs->level_now;
         const int32_t gmin = gs->level_min;
         const int32_t gmax = gs->level_max;
+
+        if (gnow < 0)
+            gnow = 0;
+        if (gnow > 9999)
+            gnow = 9999;
+        char current_text[6];
+        snprintf(current_text, sizeof(current_text), "c%04ld", (long)gnow);
+        for (int i = 0; i < 5; i++)
+        {
+            if (current_text[i] != shown_current[i] &&
+                q_char(G_CURRENT_X + 8 * i, G_TEXT_Y, current_text[i], C_LABEL))
+                shown_current[i] = current_text[i];
+        }
 
         if (gmin == INT32_MAX)
             snprintf(size_text, sizeof(size_text), "n----");
@@ -874,11 +913,11 @@ static void refresh(float level, usb_audio_state_t st)
             uint8_t digits;
             uint16_t color;
         } fields[G_DIAG_FIELDS] = {
-            {'O', vo, 3, vo ? C_RED : C_GREEN},
-            {'F', vf, 3, vf ? C_RED : C_GREEN},
-            {'S', vs, 3, C_LABEL},
-            {'C', vc, 3, C_LABEL},
-            {'U', vu, 3, vu ? C_RED : C_GREEN},
+            {'O', vo, 4, vo ? C_RED : C_GREEN},
+            {'F', vf, 4, vf ? C_RED : C_GREEN},
+            {'S', vs, 4, C_LABEL},
+            {'C', vc, 4, C_LABEL},
+            {'U', vu, 4, vu ? C_RED : C_GREEN},
             {'a', va, 4, va > LOOP0_WARN_US ? C_ORANGE : C_LABEL},
             {'b', vb, 4, vb > LOOP1_WARN_US ? C_ORANGE : C_LABEL},
             {'T', vt, 2, vt ? C_ORANGE : C_GREEN},
@@ -1156,6 +1195,10 @@ uint32_t debug_gauge_buffer_bytes(void)
 	return (uint32_t)(
 		sizeof(fill_chunk) + sizeof(queue) + sizeof(shown_pct) + sizeof(shown_host) +
 		sizeof(shown_fb) + sizeof(shown_size) + sizeof(shown_pkt) + sizeof(shown_state) +
+		sizeof(shown_usb_status) +
+#if GAUGE_SHOW_MINMAX
+		sizeof(shown_current) +
+#endif
 		sizeof(shown_format) + sizeof(shown_diag) + sizeof(shown_diag_color) +
 		sizeof(shown_log) + sizeof(shown_log_color)
 #if USB_CDC_ENABLED

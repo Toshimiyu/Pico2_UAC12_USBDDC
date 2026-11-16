@@ -110,6 +110,7 @@ extern "C" {
 #define CFG_TUD_CDC_TX_BUFSIZE                          32768
 #define CFG_TUD_CDC_RX_EPSIZE                           64
 #define CFG_TUD_CDC_TX_EPSIZE                           64
+#define CFG_TUD_CDC_EP_NOTIF_INTERVAL                   16
 
 #ifdef __cplusplus
 }

@@ -32,7 +32,11 @@ static tusb_desc_device_t const desc_device =
 
     .idVendor           = USB_VID,
     .idProduct          = USB_PID,
-    .bcdDevice          = 0x0300,
+#if USB_AUDIO_CLASS_VERSION == 1
+    .bcdDevice          = 0x0303,
+#else
+    .bcdDevice          = 0x0313,
+#endif
 
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,

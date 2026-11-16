@@ -238,6 +238,10 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
 // Length of template descriptor: 66 bytes
 #define TUD_CDC_DESC_LEN  (8+9+5+5+4+5+7+9+7+7)
 
+#ifndef CFG_TUD_CDC_EP_NOTIF_INTERVAL
+#define CFG_TUD_CDC_EP_NOTIF_INTERVAL 1
+#endif
+
 // CDC Descriptor Template
 // Interface number, string index, EP notification address and size, EP data address (out, in) and size.
 #define TUD_CDC_DESCRIPTOR(_itfnum, _stridx, _ep_notif, _ep_notif_size, _epout, _epin, _epsize) \
@@ -254,7 +258,7 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
   /* CDC Union */\
   5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_UNION, _itfnum, (uint8_t)((_itfnum) + 1),\
   /* Endpoint Notification */\
-  7, TUSB_DESC_ENDPOINT, _ep_notif, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(_ep_notif_size), 1,\
+  7, TUSB_DESC_ENDPOINT, _ep_notif, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(_ep_notif_size), CFG_TUD_CDC_EP_NOTIF_INTERVAL,\
   /* CDC Data Interface */\
   9, TUSB_DESC_INTERFACE, (uint8_t)((_itfnum)+1), 0, 2, TUSB_CLASS_CDC_DATA, 0, 0, 0,\
   /* Endpoint Out */\

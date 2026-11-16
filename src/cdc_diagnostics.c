@@ -26,7 +26,7 @@
 #define STRINGIFY_DETAIL(value) #value
 #define STRINGIFY(value) STRINGIFY_DETAIL(value)
 #define CDC_CSV_HEADER \
-	"MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS\r\n"
+	"MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS,FB_LEVEL,FB_INTEG_HZ,USB_OUT_AGE_US\r\n"
 
 _Static_assert(CDC_CSV_LINE_SIZE <= CFG_TUD_CDC_TX_BUFSIZE,
 	"CDC log line buffer must fit in the TinyUSB CDC TX FIFO");
@@ -56,6 +56,7 @@ typedef struct
 	uint8_t code;
 	usb_audio_state_t state;
 	char detail_name[20];
+	underflow_snapshot_t underflow;
 } cdc_anomaly_t;
 
 typedef struct
@@ -83,6 +84,8 @@ static uint8_t event_head;
 static uint8_t event_count;
 static uint32_t event_drop_count;
 static uint32_t row_drop_count;
+static usb_audio_event_cursor_t usb_event_cursor;
+static bool last_cdc_connected;
 static uint8_t session_header_pos;
 static volatile bool session_active;
 static uint32_t session_start_us;
@@ -296,7 +299,7 @@ static void reset_event_queue(void)
 	spin_unlock(event_lock, owner);
 }
 
-static bool start_session(uint32_t now)
+static bool start_session(void)
 {
 	if (session_header_pos == 0)
 	{
@@ -310,7 +313,9 @@ static bool start_session(uint32_t now)
 		"STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE\r\n",
 		"ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL\r\n",
 		NULL,
-		"TRACE,UPTIME_US,EVENT,FROM,TO,RATE,RING,DMA_POOL,SILENCE_FRAMES\r\n"
+		"TRACE,UPTIME_US,EVENT,FROM,TO,RATE,RING,DMA_POOL,SILENCE_FRAMES\r\n",
+		"USB_EVENT,UPTIME_US32,GENERATION,OVERWRITTEN_BEFORE,EVENT\r\n",
+		"UNDERFLOW,MS,RING,DMA_POOL,RING_POOL,HOST_RATE,FEEDBACK_RATE,FB_LEVEL,FB_INTEG_HZ,USB_GAP_MAX_US,USB_OUT_AGE_US\r\n"
 	};
 	char config_header[160];
 	const int config_header_length = snprintf(config_header, sizeof(config_header),
@@ -349,7 +354,9 @@ static bool start_session(uint32_t now)
 	}
 
 	reset_event_queue();
+	memset(&usb_event_cursor, 0, sizeof(usb_event_cursor));
 	row_drop_count = 0;
+	const uint32_t now = time_us_32();
 	next_sample_us = now;
 	next_ring_average_us = now;
 	ring_average_sum = 0;
@@ -471,7 +478,7 @@ static bool write_sample(uint32_t now)
 		goto failed;
 
 	const int appended = snprintf(line + written, sizeof(line) - (size_t)written,
-		",%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\r\n",
+		",%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu",
 		(unsigned long)underflow_count,
 		(unsigned long)stats->usb_out_gap_max_us,
 		(unsigned long)ring_capacity,
@@ -499,6 +506,17 @@ static bool write_sample(uint32_t now)
 	if (appended < 0 || (size_t)appended >= sizeof(line) - (size_t)written)
 		goto failed;
 	written += appended;
+
+	uint32_t out_age_us;
+	char out_age_text[16] = "";
+	if (usb_audio_get_out_age_us(&out_age_us))
+		snprintf(out_age_text, sizeof(out_age_text), "%lu", (unsigned long)out_age_us);
+	const int detail_length = snprintf(line + written, sizeof(line) - (size_t)written,
+		",%.1f,%.3f,%s\r\n", (double)usb_audio_get_feedback_level(),
+		(double)usb_audio_get_feedback_integrator_hz(), out_age_text);
+	if (detail_length < 0 || (size_t)detail_length >= sizeof(line) - (size_t)written)
+		goto failed;
+	written += detail_length;
 
 	if (!cdc_write(line, (uint32_t)written))
 		goto failed;
@@ -557,7 +575,20 @@ static void write_pending_anomalies(uint32_t now)
 
 	while (peek_event(&event))
 	{
-		const int written = event.code == 0
+		char out_age_text[16] = "";
+		if (event.code == UINT8_MAX && event.underflow.usb_out_age_valid)
+			snprintf(out_age_text, sizeof(out_age_text), "%lu",
+					 (unsigned long)event.underflow.usb_out_age_us);
+		const int written = event.code == UINT8_MAX
+			? snprintf(line, sizeof(line),
+				"UNDERFLOW,%lu,%ld,%ld,%ld,%lu,%lu,%.1f,%.3f,%lu,%s\r\n",
+				(unsigned long)session_milliseconds(event.underflow.timestamp_us),
+				(long)event.underflow.level, (long)event.underflow.dma_pool,
+				(long)event.underflow.ring_pool, (unsigned long)event.underflow.host_rate_hz,
+				(unsigned long)event.underflow.feedback_hz, (double)event.underflow.fb_level_f,
+				(double)event.underflow.fb_integ_hz,
+				(unsigned long)event.underflow.usb_gap_max_us, out_age_text)
+			: event.code == 0
 			? snprintf(line, sizeof(line),
 				"STATE,%lu,%s,%s,%lu,%lu,%lu,%s\r\n",
 				(unsigned long)session_milliseconds(event.timestamp_us),
@@ -617,6 +648,22 @@ static void write_pending_anomalies(uint32_t now)
 	}
 }
 
+static void write_pending_usb_event(void)
+{
+	usb_audio_event_cursor_t next = usb_event_cursor;
+	char event[8];
+	uint32_t timestamp_us, lost;
+	if (!usb_audio_get_next_event(&next, event, &timestamp_us, &lost))
+		return;
+
+	char line[96];
+	const int length = snprintf(line, sizeof(line), "USB_EVENT,%lu,%lu,%lu,%s\r\n",
+		(unsigned long)timestamp_us, (unsigned long)next.generation,
+		(unsigned long)lost, event);
+	if (length > 0 && (size_t)length < sizeof(line) && cdc_write(line, (uint32_t)length))
+		usb_event_cursor = next;
+}
+
 void cdc_diagnostics_init(void)
 {
 	if (!COM_PORT_OUTPUT_ENABLE)
@@ -662,6 +709,24 @@ void cdc_diagnostics_log_anomaly(uint8_t code, const char *detail_name, uint32_t
 		event->detail_name[0] = '\0';
 	else
 		snprintf(event->detail_name, sizeof(event->detail_name), "%s", detail_name);
+	event_count++;
+	spin_unlock(event_lock, owner);
+}
+
+void cdc_diagnostics_log_underflow(const underflow_snapshot_t *snapshot)
+{
+	if (!COM_PORT_OUTPUT_ENABLE || !session_active || event_lock == NULL)
+		return;
+	const uint32_t owner = spin_lock_blocking(event_lock);
+	if (event_count == CDC_EVENT_QUEUE_SIZE)
+	{
+		event_drop_count++;
+		spin_unlock(event_lock, owner);
+		return;
+	}
+	const uint8_t index = (uint8_t)((event_head + event_count) % CDC_EVENT_QUEUE_SIZE);
+	event_queue[index].code = UINT8_MAX;
+	event_queue[index].underflow = *snapshot;
 	event_count++;
 	spin_unlock(event_lock, owner);
 }
@@ -740,7 +805,14 @@ void cdc_diagnostics_task(void)
 	if (!COM_PORT_OUTPUT_ENABLE)
 		return;
 
-	if (!tud_cdc_connected())
+	const bool connected = tud_cdc_connected();
+	if (connected != last_cdc_connected)
+	{
+		usb_audio_record_event('P', connected ? 1u : 0u, 0, 0, true, false);
+		last_cdc_connected = connected;
+	}
+
+	if (!connected)
 	{
 		if (session_active || session_header_pos != 0)
 			tud_cdc_write_clear();
@@ -762,10 +834,10 @@ void cdc_diagnostics_task(void)
 		tud_cdc_read(discard, discard_length);
 	}
 
-	const uint32_t now = time_us_32();
-	if (!session_active && !start_session(now))
+	if (!session_active && !start_session())
 		return;
 
+	const uint32_t now = time_us_32();
 	sample_ring_level(now);
 	if ((int32_t)(now - next_sample_us) >= 0)
 	{
@@ -774,6 +846,7 @@ void cdc_diagnostics_task(void)
 	}
 	write_pending_anomalies(now);
 	write_pending_trace();
+	write_pending_usb_event();
 }
 
 #else
@@ -810,6 +883,11 @@ void cdc_diagnostics_log_anomaly(uint8_t code, const char *detail_name, uint32_t
 	(void)code;
 	(void)detail_name;
 	(void)detail_value;
+}
+
+void cdc_diagnostics_log_underflow(const underflow_snapshot_t *snapshot)
+{
+	(void)snapshot;
 }
 
 void cdc_diagnostics_log_state_change(usb_audio_state_t previous_state,

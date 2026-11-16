@@ -65,7 +65,11 @@ volatile bool audio_data_seen = false;
 #define FB_BOOST_START_ERR (128.0f)
 #define FB_BOOST_FULL_ERR  (512.0f)
 #define FB_BOOST_MAX_PPM   (1000.0f)
+#if USB_CDC_ENABLED
+#define EVT_LOG_N 256
+#else
 #define EVT_LOG_N 64
+#endif
 #define AUDIO_HISTORY_N 64
 #define AUDIO_HISTORY_PRETRIGGER_N 48
 #define AUDIO_HISTORY_POSTTRIGGER_N (AUDIO_HISTORY_N - AUDIO_HISTORY_PRETRIGGER_N)
@@ -107,6 +111,7 @@ static volatile bool rate_unsupported = false;
 static char evt_log[EVT_LOG_N][8];
 static uint32_t evt_time_us[EVT_LOG_N];
 static volatile uint32_t evt_total = 0;
+static uint32_t evt_generation;
 static volatile bool diagnostics_enabled = false;
 static spin_lock_t *event_history_lock;
 static usb_audio_history_sample_t audio_history[AUDIO_HISTORY_N];
@@ -179,6 +184,32 @@ bool usb_audio_get_event_entry(uint32_t age, char out[8], uint32_t *timestamp_us
 	const uint32_t index = (evt_total - 1u - age) % EVT_LOG_N;
 	memcpy(out, evt_log[index], 8);
 	*timestamp_us = evt_time_us[index];
+	spin_unlock(event_history_lock, owner);
+	return true;
+}
+
+bool usb_audio_get_next_event(usb_audio_event_cursor_t *cursor, char out[8],
+							 uint32_t *timestamp_us, uint32_t *lost)
+{
+	const uint32_t owner = spin_lock_blocking(event_history_lock);
+	if (!cursor->initialized || cursor->generation != evt_generation)
+	{
+		cursor->initialized = true;
+		cursor->generation = evt_generation;
+		cursor->next = 0;
+	}
+	const uint32_t available = evt_total - cursor->next;
+	*lost = available > EVT_LOG_N ? available - EVT_LOG_N : 0;
+	cursor->next += *lost;
+	if (cursor->next == evt_total)
+	{
+		spin_unlock(event_history_lock, owner);
+		return false;
+	}
+	const uint32_t index = cursor->next % EVT_LOG_N;
+	memcpy(out, evt_log[index], 8);
+	*timestamp_us = evt_time_us[index];
+	cursor->next++;
 	spin_unlock(event_history_lock, owner);
 	return true;
 }
@@ -299,6 +330,9 @@ typedef struct
 	uint32_t transient_counter_us; // 【追加】切り替え直後の過渡期タイマー (us)
 } fb_ctrl_t;
 static fb_ctrl_t fb;
+
+static underflow_snapshot_t last_underflow_snapshot;
+static bool underflow_snapshot_valid;
 
 // Sample-rate switch sequence (Ver1.2), Core0 only
 static uint32_t pending_freq = 0;	// rate requested by SET_CUR, applied when the output is quiet
@@ -548,6 +582,7 @@ void usb_audio_reset_diagnostics(void)
 	stats.drop_invalid_frames = 0;
 	stats.click_candidate_count = 0;
 	stats.max_click_curvature_q31 = 0;
+	underflow_snapshot_valid = false;
 	stats.loop1_max_us = 0;
 	stats.loop1_over_count = 0;
 	stats.rx_frames = rx_frames_counter;
@@ -568,6 +603,7 @@ void usb_audio_reset_diagnostics(void)
 		memset(evt_log, 0, sizeof(evt_log));
 		memset(evt_time_us, 0, sizeof(evt_time_us));
 		evt_total = 0;
+		evt_generation++;
 		audio_history_total = 0;
 		audio_history_last_us = now;
 		memset(fault_history, 0, sizeof(fault_history));
@@ -1189,6 +1225,21 @@ static void service_state(void)
 		else if (ring_pool_level <= LEVEL_LOW_MARK)
 		{
 			stats.underflow_count++;
+			last_underflow_snapshot = (underflow_snapshot_t){
+				.timestamp_us = time_us_32(),
+				.level = level,
+				.dma_pool = dma_pool_frames,
+				.ring_pool = ring_pool_level,
+				.host_rate_hz = host_rate_hz,
+				.feedback_hz = (uint32_t)(stats.feedback_hz + 0.5f),
+				.fb_level_f = fb.level_f,
+				.fb_integ_hz = fb.integ_hz,
+				.usb_gap_max_us = stats.usb_out_gap_max_us,
+			};
+			last_underflow_snapshot.usb_out_age_valid =
+				usb_audio_get_out_age_us(&last_underflow_snapshot.usb_out_age_us);
+			underflow_snapshot_valid = true;
+			cdc_diagnostics_log_underflow(&last_underflow_snapshot);
 			usb_audio_log_anomaly(1, (uint8_t)(ring_pool_level / 16),
 								  "RING_POOL", (uint32_t)ring_pool_level);
 			set_state(USB_AUDIO_UNDERFLOW_FATAL);
@@ -1431,6 +1482,7 @@ void usb_sound_card_init(void)
 	memset(&stats, 0, sizeof(stats));
 	level_stats_reset();
 	set_state(USB_AUDIO_IDLE);
+	usb_audio_record_event('J', (uint8_t)stats.state, 0, 0, true, false);
 
 	audio_state.acq_volume = DEFAULT_VOLUME;
 	volume_control();
@@ -1506,6 +1558,35 @@ uint32_t usb_audio_get_feedback_hz(void)
     return (stats.state == USB_AUDIO_IDLE || stats.state == USB_AUDIO_SWITCHING)
         ? 0u
         : (uint32_t)(stats.feedback_hz + 0.5f);
+}
+
+float usb_audio_get_feedback_level(void)
+{
+	return fb.level_f;
+}
+
+float usb_audio_get_feedback_integrator_hz(void)
+{
+	return fb.integ_hz;
+}
+
+bool usb_audio_get_out_age_us(uint32_t *age_us)
+{
+	if (stats.state != USB_AUDIO_STREAMING)
+		return false;
+	const uint32_t irq_state = save_and_disable_interrupts();
+	const uint32_t now = time_us_32();
+	const uint32_t last = rx_packet_last_us;
+	restore_interrupts(irq_state);
+	if (last == 0u)
+		return false;
+	*age_us = now - last;
+	return true;
+}
+
+const underflow_snapshot_t *usb_audio_get_last_underflow_snapshot(void)
+{
+	return underflow_snapshot_valid ? &last_underflow_snapshot : NULL;
 }
 
 uint32_t usb_audio_get_feedback_limit_hz(void)
