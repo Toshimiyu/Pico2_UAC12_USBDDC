@@ -57,7 +57,7 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 
 ### V2.1
 
-- **仕様変更：** UAC1/UAC2のOutput Terminalを`0x0304`（Desktop Speaker）から`0x0602`（Digital Audio Interface）に変更。AndroidはUAC1版とOnkyo HF PlayerのUSBドライバーを使用し、UAC2版はWindows向けとします。
+- **仕様変更：** UAC1/UAC2のOutput Terminalを`0x0304`（Desktop Speaker）から`0x0602`（Digital Audio Interface）に変更。AndroidはUAC1版とOnkyo HF Playerを使い、HF PlayerのUSBドライバーを使用する前提とし、UAC2版はWindows向けとします。
 - UAC1/UAC2の`bcdDevice`をそれぞれ`0x0303`/`0x0313`に更新
 - 診断画面のO/F/S/C/Uを4桁表示に変更し、リングの現在値`c`を追加
 - CDC診断ログにフィードバック制御値とUSB OUT最終受信からの経過時間、UNDERFLOW発生時の詳細行を追加
@@ -562,7 +562,7 @@ U = 0
 ### 仕様上の注意点（V2.1）
 
 - UAC1/UAC2ともOutput Terminalは`0x0602`（Digital Audio Interface）です。確認したAndroid標準ドライバーでは認識されず、OS標準出力を使う他のプレーヤーは対応対象外です。
-- AndroidではUAC1ビルドとOnkyo HF PlayerのUSBドライバーを使用してください。HF Playerの独自ドライバーはUAC2に対応していないため、UAC2ビルドはWindows向けです。
+- AndroidではUAC1ビルドとOnkyo HF Playerを使い、HF PlayerのUSBドライバーを使用してください。HF Playerの独自ドライバーはUAC2に対応していないため、UAC2ビルドはWindows向けです。
 - HF Playerの独自ドライバーが利用できる理由は未確定です。アプリやドライバーの更新によって、将来動作が変わる可能性があります。
 - `bcdDevice`はUAC1が`0x0303`、UAC2が`0x0313`です。従来の記述子との識別を目的として更新していますが、Windowsに古いデバイス情報が残る場合があります。
 

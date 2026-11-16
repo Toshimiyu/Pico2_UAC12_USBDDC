@@ -63,7 +63,7 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 ### V2.1
 
-- **Specification change:** Change the UAC1/UAC2 Output Terminal from `0x0304` (Desktop Speaker) to `0x0602` (Digital Audio Interface). Use the UAC1 build and Onkyo HF Player's USB driver on Android; the UAC2 build is intended for Windows.
+- **Specification change:** Change the UAC1/UAC2 Output Terminal from `0x0304` (Desktop Speaker) to `0x0602` (Digital Audio Interface). On Android, use the UAC1 build and Onkyo HF Player with its USB driver; the UAC2 build is intended for Windows.
 - Update UAC1/UAC2 `bcdDevice` to `0x0303`/`0x0313`, respectively
 - Display O/F/S/C/U with four digits and add the current ring level `c` to the Diagnostics screen
 - Add feedback-control values and USB OUT receive age to CDC samples, plus a detailed UNDERFLOW event row
@@ -621,7 +621,7 @@ Diagnostic information is not overlaid on the playback screen.
 ### Specification Notes (V2.1)
 
 - Both UAC1 and UAC2 use Output Terminal `0x0602` (Digital Audio Interface). The tested Android standard driver does not recognize this configuration, and other players using Android's standard audio output are outside the support scope.
-- On Android, use the UAC1 build and Onkyo HF Player's USB driver. HF Player's proprietary driver does not support UAC2, so the UAC2 build is intended for Windows.
+- On Android, use the UAC1 build and Onkyo HF Player with its USB driver. HF Player's proprietary driver does not support UAC2, so the UAC2 build is intended for Windows.
 - Why HF Player's proprietary driver works with this configuration is unconfirmed. Future app or driver updates may change its behavior.
 - `bcdDevice` is `0x0303` for UAC1 and `0x0313` for UAC2. These values were updated to distinguish the descriptors from earlier versions, but Windows may retain old device information.
 
