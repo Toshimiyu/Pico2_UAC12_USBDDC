@@ -627,6 +627,19 @@ Diagnostic information is not overlaid on the playback screen.
 
 Note: With the Android 16 (Sony XQ-ES44) device connected, a USB tester measured 4.972 V and 0.140 A (approximately 0.696 W).
 
+### If Windows Does Not Recognize the Device
+
+Windows may retain old device information after an earlier firmware version has been connected, preventing correct recognition. If this happens, try removing the device registration and reconnecting it:
+
+1. Disconnect the device's USB cable.
+2. Open **Device Manager** in Windows.
+3. Select **View → Show hidden devices**.
+4. Find this device under **Sound, video and game controllers** or another relevant category, right-click it, and select **Uninstall device**.
+5. If an option to delete the driver software is shown, leave it **unchecked** and uninstall the device.
+6. Reconnect the device and wait for Windows to recognize it again.
+
+Confirm the device name before removal to avoid uninstalling another audio device. This procedure attempts to recreate the device registration; it may not resolve every recognition problem.
+
 ### Android Click Investigation
 
 Similar clicks occurred in this project, and the feedback limits were previously changed to `FB_BASE_LIMIT_PPM=50` and `FB_BOOST_MAX_PPM=500`. The historical results below are from the derived [Pico2_UAC12_USBDDC_Weather](https://github.com/Toshimiyu/Pico2_UAC12_USBDDC_Weather) project, not measurements of this project with its current settings.
