@@ -602,6 +602,9 @@ U = 0
 
 ### Androidでのプツ音の検証
 
+<details>
+<summary>Androidでのプツ音の検証を表示</summary>
+
 本プロジェクトでも同様のプツ音が発生し、以前はフィードバック制限値を`FB_BASE_LIMIT_PPM=50`、`FB_BOOST_MAX_PPM=500`に変更しました。以下は派生版の[Pico2_UAC12_USBDDC_Weather](https://github.com/Toshimiyu/Pico2_UAC12_USBDDC_Weather)での過去の検証結果であり、本プロジェクトの現在の設定での測定値ではありません。Foobar2000 Android版の記録はV2.1より前の参考情報で、現在のサポート対象を示すものではありません。
 
 2026年11月13日、Sony XQ-ES44（Android 16、標準オーディオドライバー）をUAC2で使用し、48kHz / 32bitで再生した際の観察結果です。Windows 11 26H2でも48kHz / 32bitで比較しました。
@@ -621,6 +624,8 @@ U = 0
 - 同系統のレート切替ではPLLの再設定を省略しますが、PIOは停止・再初期化されます。出力開始時にもPIOを再初期化します。
 - 調整後のプツ音の頻度比較、OVERFLOW / UNDERFLOWの発生状況、およびフィードバック補正が上限に張り付くかは未確認です。
 - ノイズ発生時のBCLK・LRCK・DATAとDACアナログ出力の波形は未測定で、原因がホスト側・デバイス側・DAC側のどこにあるかは特定できていません。将来は録音、信号の同時観測、別端末での比較が切り分けの候補です。
+
+</details>
 
 ## 対応DAC
 

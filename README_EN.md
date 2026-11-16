@@ -658,6 +658,9 @@ Confirm the device name before removal to avoid uninstalling another audio devic
 
 ### Android Click Investigation
 
+<details>
+<summary>Show Android click investigation</summary>
+
 Similar clicks occurred in this project, and the feedback limits were previously changed to `FB_BASE_LIMIT_PPM=50` and `FB_BOOST_MAX_PPM=500`. The historical results below are from the derived [Pico2_UAC12_USBDDC_Weather](https://github.com/Toshimiyu/Pico2_UAC12_USBDDC_Weather) project, not measurements of this project with its current settings. The Foobar2000 for Android observation predates V2.1 and is not evidence of current support.
 
 On November 13, 2026, playback was observed on a Sony XQ-ES44 running Android 16 with the standard audio driver, using UAC2 at 48 kHz / 32-bit. Windows 11 26H2 was also tested at 48 kHz / 32-bit.
@@ -677,6 +680,8 @@ Reducing the feedback limits tended to improve the symptoms, but the cause remai
 - Rate changes within the same clock family skip PLL reconfiguration, but stop and reinitialize the PIO. The PIO is also reinitialized when output starts.
 - The change in click frequency, occurrence of OVERFLOW / UNDERFLOW, and whether feedback correction remains at its limit after the current adjustments have not been confirmed.
 - BCLK, LRCK, DATA, and DAC analog output waveforms during a click have not been measured. The cause has not been isolated to the host, device, or DAC. Future options include recording the output, observing the signals simultaneously, and comparing another host.
+
+</details>
 
 ---
 
