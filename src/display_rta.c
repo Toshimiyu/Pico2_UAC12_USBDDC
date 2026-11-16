@@ -41,6 +41,7 @@
 // ===================================================
 #define PEAK_HOLD_US      300000u
 #define DIAGNOSTICS_RESET_HOLD_US 3000000u
+#define BOOT_READY_DETAIL_HOLD_US 500000u
 #define PEAK_FALL_PIXELS_PER_SEC 120u
 #define PEAK_FALL_PIXEL_INTERVAL_US (1000000u / PEAK_FALL_PIXELS_PER_SEC)
 #define RTA_FRAME_INTERVAL_US 33334u
@@ -202,8 +203,10 @@ static uint32_t peak_l_meter_next_fall = 0;
 static uint32_t peak_r_meter_next_fall = 0;
 static uint16_t last_l_meter_marker = PEAK_NONE_Y;
 static uint16_t last_r_meter_marker = PEAK_NONE_Y;
-static uint32_t splash_start_us = 0;
-static uint8_t splash_stage = 0;   
+static uint8_t splash_stage = 0;
+static uint64_t splash_ready_start_us = 0;
+static bool splash_ready_detail_expired = false;
+static uint8_t splash_ready_clear_row = 0;
 static display_page_t current_page = DISPLAY_PAGE_BOOT;
 static bool page_clear_pending = false;
 static uint16_t page_clear_row = 0;
@@ -804,10 +807,9 @@ static const char *const boot_steps[6] = {
     lcd_draw_string(20, 174, splash_stage >= 5 ? "System Ready" : "Initializing Subsystems",
         COLOR_TITLE, COLOR_BG, 1);
 
-    splash_start_us = time_us_32();
-
     lcd_draw_string(240, 174, ".", COLOR_TITLE, COLOR_BG, 1);
-    lcd_draw_string(20, 190, boot_steps[splash_stage <= 5 ? splash_stage : 0], COLOR_DIVIDER, COLOR_BG, 1);
+    if (splash_stage < 5 || !splash_ready_detail_expired)
+        lcd_draw_string(20, 190, boot_steps[splash_stage <= 5 ? splash_stage : 0], COLOR_DIVIDER, COLOR_BG, 1);
     lcd_fill_rect(20, 210, 280, 1, COLOR_DIVIDER);
     lcd_draw_string(32, 218, "X:NEXT PAGE", COLOR_CH_LABEL, COLOR_BG, 1);
 }
@@ -828,6 +830,12 @@ void display_rta_set_boot_stage(uint8_t stage)
         stage = 5;
     }
 
+    if (stage == 5 && splash_stage != 5)
+    {
+        splash_ready_start_us = time_us_64();
+        splash_ready_detail_expired = false;
+        splash_ready_clear_row = 0;
+    }
     splash_stage = stage;
     if (current_page != DISPLAY_PAGE_BOOT || page_clear_pending)
     {
@@ -836,14 +844,23 @@ void display_rta_set_boot_stage(uint8_t stage)
 
     lcd_fill_rect(20, 190, 250, 12, COLOR_BG);
 
-    lcd_draw_string(
-        20,
-        190,
-        boot_steps[stage],
-        COLOR_DIVIDER,
-        COLOR_BG,
-        1
-    );
+    if (stage < 5 || !splash_ready_detail_expired)
+    {
+        lcd_draw_string(
+            20,
+            190,
+            boot_steps[stage],
+            COLOR_DIVIDER,
+            COLOR_BG,
+            1
+        );
+    }
+
+    if (stage == 5)
+    {
+        lcd_fill_rect(20, 174, 184, 8, COLOR_BG);
+        lcd_draw_string(20, 174, "System Ready", COLOR_TITLE, COLOR_BG, 1);
+    }
 
     char dots[7] = {0};
 
@@ -1038,6 +1055,12 @@ static bool display_audio_has_slack(void)
 
 bool display_rta_page_service(void)
 {
+    if (splash_stage == 5 && !splash_ready_detail_expired &&
+        time_us_64() - splash_ready_start_us >= BOOT_READY_DETAIL_HOLD_US)
+    {
+        splash_ready_detail_expired = true;
+    }
+
     if (page_clear_pending)
     {
         if (page_clear_row < 240)
@@ -1118,6 +1141,12 @@ bool display_rta_page_service(void)
             page_draw_pending = false;
             page_ready = true;
         }
+    }
+    else if (current_page == DISPLAY_PAGE_BOOT && splash_ready_detail_expired &&
+             splash_ready_clear_row < 8 && display_audio_has_slack())
+    {
+        lcd_fill_rect(20, 190 + splash_ready_clear_row, 96, 1, COLOR_BG);
+        splash_ready_clear_row++;
     }
 
     return false;
