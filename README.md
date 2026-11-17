@@ -578,13 +578,13 @@ CMakeが見つからない場合の確認方法とPATH設定は[Windows PowerShe
 ##### UAC1
 
 ```text
-build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC1.uf2
+build/src/Pico2_UAC12_USBDDC_UAC1.uf2
 ```
 
 ##### UAC2
 
 ```text
-build/src/Pico2_UAC12_USBDDC_11FFT_NoOverSampling_UAC2.uf2
+build/src/Pico2_UAC12_USBDDC_UAC2.uf2
 ```
 
 書き込み手順：

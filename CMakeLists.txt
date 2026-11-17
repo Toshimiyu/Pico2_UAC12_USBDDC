@@ -50,7 +50,7 @@ endif()
 include(pico_sdk_import.cmake)
 # include(example_auto_set_url.cmake)
 
-project(Pico2_UAC12_USBDDC_11FFT_NoOverSampling C CXX ASM)
+project(Pico2_UAC12_USBDDC C CXX ASM)
 
 # USB bring-up mode:
 # 0 = USB off, 1 = TinyUSB enumeration only without CDC,
@@ -78,7 +78,7 @@ add_subdirectory(src)
 
 # Compile Definitions
 # (PICO_USBDEV_* definitions for pico-extras usb_device / LUFA are no longer needed after migrating to TinyUSB.)
-target_compile_definitions(Pico2_UAC12_USBDDC_11FFT_NoOverSampling PRIVATE
+target_compile_definitions(Pico2_UAC12_USBDDC PRIVATE
     AUDIO_FREQ_MAX=192000
 
     USB_BRINGUP_LEVEL=${USB_BRINGUP_LEVEL}
