@@ -61,6 +61,12 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 <details>
 <summary>バージョン履歴を表示</summary>
 
+### V2.2
+
+- フィードバック目標をリング容量の50%（2048フレーム）に変更し、水位初期化、条件付き積分、レート比例ゲイン、ストリーム間のクロック差推定値の引き継ぎを既定で有効化。USB再列挙後のシード無効化は未確認です。
+- UAC1/UAC2のOutput Terminalを`0x0602`（Digital Audio Interface）から`0x0301`（Speaker）へ変更。変更後のAndroid標準ドライバーでの認識は未確認です。
+- CDC診断ログにOFFSET_SEED/UPDATE、USBイベントカウンター、PCMトレースなどを追加。CDC診断ビルドではFFT計算・表示を停止し、診断画面とログ取得を優先します。
+
 ### V2.1
 
 - **仕様変更：** UAC1/UAC2のOutput Terminalを`0x0304`（Desktop Speaker）から`0x0602`（Digital Audio Interface）に変更。AndroidはUAC1版とOnkyo HF Playerを使い、HF PlayerのUSBドライバーを使用する前提とし、UAC2版はWindows向けとします。
@@ -240,16 +246,16 @@ Pico 2 + Pico Audio Pack（PCM5100A）+ Pico Display Pack 2.0
 
 ## 表示・診断画面
 
-Xボタンで起動画面、再生画面、診断画面を切り替えます。CDC有効ビルドでは再生開始ログ画面も表示できます。診断画面のA/BでUSBイベント履歴を移動し、A+Bで音声状態履歴を切り替えます。Yを3秒長押しすると診断値とUSBイベント履歴をリセットします。画面表示やイベント記号・異常コードの詳細は[診断イベント一覧](docs/DIAGNOSTICS.md)を参照してください。
+通常ビルドではXボタンで起動画面、再生画面、診断画面を切り替えます。CDC有効ビルド（`USB_BRINGUP_LEVEL=3`）ではFFT表示とFFT処理を停止し、起動画面から診断画面へ移行します。Xボタンで起動画面、診断画面、再生開始ログ画面を切り替えられます。診断画面のA/BでUSBイベント履歴を移動し、A+Bで音声状態履歴を切り替えます。Yを3秒長押しすると診断値とUSBイベント履歴をリセットします。画面表示やイベント記号・異常コードの詳細は[診断イベント一覧](docs/DIAGNOSTICS.md)を参照してください。
 
 ## 対応OS
 
 - Windows 11（26H2で動作確認済み。Foobar2000でWASAPIモードで再生するときは、音源のサンプリングレートとWindows11のサンプリングレートを合わせてから再生を行ってください。ASIO4ALLやASIOドライバー等の場合は、サンプリングレートが異なっていても正常に再生されます。ASIO4ALL2.22で確認済み。）
 - Android 16（Sony XQ-ES44スマートフォン。有償版Onkyo HF Player v2.15.2のUSBドライバーとUAC1で動作確認）
 
-### 仕様上の注意点（V2.1）
+### 現行ファームウェアの仕様上の注意点
 
-- UAC1/UAC2ともOutput Terminalは`0x0602`（Digital Audio Interface）です。確認したAndroid標準ドライバーでは認識されず、OS標準出力を使う他のプレーヤーは対応対象外です。
+- 現行ファームウェアはUAC1/UAC2ともOutput Terminal `0x0301`（Generic Speaker / Speaker Output）を使用します。この変更後のAndroid標準ドライバーでの認識は未確認です。
 - AndroidではUAC1ビルドとOnkyo HF Playerを使い、HF PlayerのUSBドライバーを使用してください。HF Playerの独自ドライバーはUAC2に対応していないため、UAC2ビルドはWindows向けです。
 - HF Playerの独自ドライバーが利用できる理由は未確認です。アプリやドライバーの更新によって、将来動作が変わる可能性があります。
 - `bcdDevice`はUAC1が`0x0303`、UAC2が`0x0313`です。従来の記述子との識別を目的として更新していますが、Windowsに古いデバイス情報が残る場合があります。

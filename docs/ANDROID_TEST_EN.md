@@ -14,7 +14,7 @@ On November 13, 2026, playback was observed on a Sony XQ-ES44 running Android 16
 - Turning DSEE Ultimate off in the Music app greatly reduced click frequency, but intermittent clicks and brief muddy-sounding audio remained.
 - The diagnostic screen showed O/F/S/C/U at zero and no anomaly events. This does not rule out every kind of audio problem.
 
-Reducing the feedback limits tended to improve the symptoms, but the cause remains unconfirmed. The roles of the app, audio effects, and feedback control need further investigation. The Foobar2000 for Android observation is a pre-V2.1 reference test and is outside current support. Disabling DSEE Ultimate was also only a possible workaround at the time. Android's standard driver is outside the V2.1 support scope. Long-term stability with these settings has not been verified; overly narrow correction limits can allow the ring level to drift and cause dropouts.
+Reducing the feedback limits tended to improve the symptoms, but the cause remains unconfirmed. The roles of the app, audio effects, and feedback control need further investigation. The Foobar2000 for Android observation is a pre-V2.1 reference test and is outside current support. Disabling DSEE Ultimate was also only a possible workaround at the time. V2.2 changes the Output Terminal to `0x0301`, but recognition by Android's standard driver has not been verified. Long-term stability with these settings has not been verified; overly narrow correction limits can allow the ring level to drift and cause dropouts.
 
 #### Status After the Current Adjustments
 

@@ -429,7 +429,7 @@ static void draw_log_header(void)
 
 static inline uint16_t target_px(void)
 {
-	return (uint16_t)(((uint32_t)G_IN_W * SIZE_BUFFER_FB_THRESHOLD) / SIZE_AUDIO_RING_FRAMES);
+	return (uint16_t)(((uint32_t)G_IN_W * FB_TARGET_LEVEL) / SIZE_AUDIO_RING_FRAMES);
 }
 
 static void poll_log_buttons(uint32_t now)
@@ -522,8 +522,8 @@ void debug_gauge_init(void)
 #else
 	queue_text_at(G_UAC_X, G_FORMAT_Y, "UAC2", 4, C_TITLE);
 #endif
-	queue_text_at(G_VERSION_X, G_VERSION_Y, "v" FW_VERSION,
-				  (int)sizeof("v" FW_VERSION) - 1, C_TITLE);
+	queue_text_at(G_VERSION_X, G_VERSION_Y, "v" FW_DISPLAY_VERSION,
+				  (int)sizeof("v" FW_DISPLAY_VERSION) - 1, C_TITLE);
 	queue_text_at(8, G_HOST_Y, "HOST", 4, C_LABEL);
 	queue_text_at(8, G_FB_Y, "FB", 2, C_LABEL);
 	queue_text_at(8, G_FRAME_Y + 2, "RING", 4, C_LABEL);
@@ -1071,6 +1071,12 @@ static void startup_log_refresh(void)
 				length = snprintf(text, sizeof(text), "%05lu.%03lu %s>%s %6lu R%04lu D%04lu",
 					seconds, milliseconds, state_text(event.from), state_text(event.to),
 					(unsigned long)event.rate, (unsigned long)event.ring, (unsigned long)event.dma_pool);
+			else if (event.kind == TRACE_PCM_START || event.kind == TRACE_PCM_END || event.kind == TRACE_PCM_ABORT)
+				length = snprintf(text, sizeof(text), "%05lu.%03lu PCM %s %lu",
+					seconds, milliseconds,
+					event.kind == TRACE_PCM_START ? "START" :
+						(event.kind == TRACE_PCM_END ? "END" : "ABORT"),
+					(unsigned long)event.rate);
 			else
 				length = snprintf(text, sizeof(text), "%05lu.%03lu %s F%lu",
 					seconds, milliseconds,

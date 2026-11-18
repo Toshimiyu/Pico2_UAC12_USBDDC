@@ -130,11 +130,17 @@
 #define LOOP0_WARN_US (1000)
 #define LOOP1_WARN_US (1000)
 
-// Feedback target level (75%) threshold. LCD drawing is allowed only at or above this level.
+// 75% ring threshold for startup/recovery; also the fallback feedback target.
 #define SIZE_BUFFER_FB_THRESHOLD (USB_AUDIO_STARTUP_PREFILL_FRAMES)
 
+#if FB_EXPERIMENTAL_TARGET
+#define FB_TARGET_LEVEL (SIZE_AUDIO_RING_FRAMES / 2u)
+#else
+#define FB_TARGET_LEVEL (SIZE_BUFFER_FB_THRESHOLD)
+#endif
+
 // LCD drawing (blocking SPI on Core0) is only allowed while the ring holds at least this many frames.
-// Defined once here: display services are allowed when at least half the feedback target remains buffered.
+// Keep half of the 75% ring threshold buffered before servicing the display.
 #define DISPLAY_MIN_AUDIO_HEADROOM_SAMPLES (SIZE_BUFFER_FB_THRESHOLD / 2)
 
 // Feedback adjustment limit (returns a value corresponding to +/-1 sample; the reference is 1000).

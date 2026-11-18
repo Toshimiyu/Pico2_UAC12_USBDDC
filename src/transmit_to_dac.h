@@ -59,5 +59,9 @@ extern DMA_DIAG dma_diag;
 extern void dma_diag_reset(void);        // restart MIN/MAX collection (Core0)
 extern void dma_diag_reset_counters(void);
 extern uint32_t dma_tx_pool_frames(void); // frames queued in the DMA pool (upper bound, includes the block being played)
+#if FB_EXPERIMENTAL_LEVEL_SEED
+uint32_t dma_tx_feedback_seed_arm(void);
+bool dma_tx_feedback_seed_ready(uint32_t generation);
+#endif
 
 #endif /* _TRANSMIT_TO_DAC_H_ */

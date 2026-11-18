@@ -6,6 +6,7 @@
 #include "tusb.h"
 
 #include "cdc_diagnostics.h"
+#include "cdc_log_timing.h"
 #include "common.h"
 #include "debug_gauge.h"
 #include "display_rta.h"
@@ -21,12 +22,12 @@
 #define CDC_EVENT_QUEUE_SIZE 16u
 #define CDC_TRACE_QUEUE_SIZE 128u
 #define CDC_TRACE_HISTORY_SIZE 128u
-#define CDC_CSV_LINE_SIZE 480u
+#define CDC_CSV_LINE_SIZE 640u
 #define CDC_MEMORY_LINE_SIZE 128u
 #define STRINGIFY_DETAIL(value) #value
 #define STRINGIFY(value) STRINGIFY_DETAIL(value)
 #define CDC_CSV_HEADER \
-	"MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS,FB_LEVEL,FB_INTEG_HZ,USB_OUT_AGE_US\r\n"
+	"MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS,FB_LEVEL,FB_INTEG_HZ,USB_OUT_AGE_US,USB_RESET_COUNT,USB_SUSPEND_COUNT,USB_RESUME_COUNT,DTR_ASSERT_COUNT,DTR_DEASSERT_COUNT\r\n"
 
 _Static_assert(CDC_CSV_LINE_SIZE <= CFG_TUD_CDC_TX_BUFSIZE,
 	"CDC log line buffer must fit in the TinyUSB CDC TX FIFO");
@@ -91,18 +92,136 @@ static volatile bool session_active;
 static uint32_t session_start_us;
 static uint64_t session_start_uptime_us;
 static uint32_t next_sample_us;
+static uint32_t next_fast_us;
+static uint32_t fast_missed;
+static uint32_t fast_dropped;
+static uint64_t clock_unix_us;
+static uint64_t clock_uptime_us;
+static bool clock_synced;
+static bool clock_reply_pending;
+static bool clock_error_pending;
+static char clock_input[32];
+static uint8_t clock_input_length;
+static bool clock_input_overflow;
 static uint32_t next_ring_average_us;
 static uint64_t ring_average_sum;
 static uint32_t ring_average_count;
 static int32_t ring_min;
 static int32_t ring_max;
 static uint32_t max_hf_diff_session;
-static uint32_t session_underflow_start;
 static uint32_t session_switch_start;
 static uint32_t stream_start_count;
 static uint32_t stream_stop_count;
 static cdc_timing_window_t lcd_timing;
 static cdc_timing_window_t fft_timing;
+#if FB_EXPERIMENTAL_OFFSET_SEED
+#define CDC_OFFSET_QUEUE_SIZE 16u
+static bool cdc_write(const char *text, uint32_t length);
+typedef struct
+{
+	uint64_t uptime_us;
+	uint64_t age_us;
+	uint32_t rate;
+	bool seed;
+	bool valid;
+	bool have_stop;
+	float saved_ppm;
+	feedback_offset_result_t result;
+} cdc_offset_event_t;
+static cdc_offset_event_t offset_queue[CDC_OFFSET_QUEUE_SIZE];
+static uint8_t offset_head;
+static uint8_t offset_count;
+static uint32_t offset_dropped;
+
+static void enqueue_offset(cdc_offset_event_t event)
+{
+	if (!session_active)
+		return;
+	if (offset_count == CDC_OFFSET_QUEUE_SIZE)
+	{
+		offset_dropped++;
+		return;
+	}
+	offset_queue[(offset_head + offset_count) % CDC_OFFSET_QUEUE_SIZE] = event;
+	offset_count++;
+}
+
+void cdc_diagnostics_offset_seed(uint64_t uptime_us, uint32_t rate, bool valid,
+	float saved_ppm, bool have_stop, uint64_t age_us)
+{
+	enqueue_offset((cdc_offset_event_t){.uptime_us = uptime_us, .rate = rate,
+		.seed = true, .valid = valid, .saved_ppm = saved_ppm,
+		.have_stop = have_stop, .age_us = age_us});
+}
+
+void cdc_diagnostics_offset_update(uint64_t uptime_us, uint32_t rate,
+	const feedback_offset_result_t *result)
+{
+	enqueue_offset((cdc_offset_event_t){.uptime_us = uptime_us, .rate = rate,
+		.result = *result});
+}
+
+static const char *offset_reason(feedback_offset_reason_t reason)
+{
+	switch (reason)
+	{
+	case OFFSET_ACCEPT_INITIAL: return "INITIAL";
+	case OFFSET_ACCEPT_SMOOTHED: return "SMOOTHED";
+	case OFFSET_REJECT_BOOST: return "BOOST";
+	case OFFSET_REJECT_SATURATION: return "SATURATION";
+	case OFFSET_REJECT_RANGE: return "RANGE";
+	case OFFSET_REJECT_PENDING: return "PENDING";
+	case OFFSET_REJECT_GAP: return "GAP";
+	default: return "UNKNOWN";
+	}
+}
+
+static void write_pending_offset(void)
+{
+	char line[256];
+	while (offset_count != 0u)
+	{
+		const cdc_offset_event_t *event = &offset_queue[offset_head];
+		int length;
+		if (event->seed)
+		{
+			char age[24] = "";
+			if (event->have_stop)
+				snprintf(age, sizeof(age), "%llu", (unsigned long long)(event->age_us / 1000u));
+			length = snprintf(line, sizeof(line), "OFFSET_SEED,%llu,%lu,%u,%.3f,%s\r\n",
+				(unsigned long long)event->uptime_us, (unsigned long)event->rate,
+				event->valid ? 1u : 0u, (double)event->saved_ppm, age);
+		}
+		else
+		{
+			const feedback_offset_result_t *r = &event->result;
+			if (r->reason == OFFSET_REJECT_GAP)
+				length = snprintf(line, sizeof(line),
+					"OFFSET_UPDATE,%llu,%lu,,,,,GAP,%u,%.3f\r\n",
+					(unsigned long long)event->uptime_us, (unsigned long)event->rate,
+					r->saved_valid ? 1u : 0u, (double)r->saved_ppm);
+			else
+				length = snprintf(line, sizeof(line),
+					"OFFSET_UPDATE,%llu,%lu,%.3f,%.3f,%.4f,%.2f,%s,%u,%.3f\r\n",
+					(unsigned long long)event->uptime_us, (unsigned long)event->rate,
+					(double)r->estimate_ppm, (double)r->correction_ppm,
+					(double)r->slope_frames_s, (double)r->saturation_pct,
+					offset_reason(r->reason), r->saved_valid ? 1u : 0u, (double)r->saved_ppm);
+		}
+		if (length < 0 || (size_t)length >= sizeof(line) || !cdc_write(line, (uint32_t)length))
+			return;
+		offset_head = (uint8_t)((offset_head + 1u) % CDC_OFFSET_QUEUE_SIZE);
+		offset_count--;
+	}
+	if (offset_dropped != 0u)
+	{
+		const int length = snprintf(line, sizeof(line), "OFFSET_DROPPED,%lu\r\n",
+			(unsigned long)offset_dropped);
+		if (length > 0 && (size_t)length < sizeof(line) && cdc_write(line, (uint32_t)length))
+			offset_dropped = 0;
+	}
+}
+#endif
 
 static const char *anomaly_name(uint8_t code)
 {
@@ -149,6 +268,103 @@ static bool cdc_write(const char *text, uint32_t length)
 
 	tud_cdc_write_flush();
 	return true;
+}
+
+static void service_clock_input(void)
+{
+	uint8_t input[32];
+	const uint32_t available = tud_cdc_available();
+	const uint32_t count = tud_cdc_read(input, available < sizeof(input) ? available : sizeof(input));
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		const char c = (char)input[i];
+		if (c == '\n')
+		{
+			clock_input[clock_input_length] = '\0';
+			uint64_t unix_us;
+			if (!clock_input_overflow && cdc_parse_time_sync(clock_input, &unix_us))
+			{
+				clock_uptime_us = time_us_64();
+				clock_unix_us = unix_us;
+				clock_synced = true;
+				clock_reply_pending = true;
+			}
+			else
+				clock_error_pending = true;
+			clock_input_length = 0;
+			clock_input_overflow = false;
+		}
+		else if (c != '\r')
+		{
+			if (clock_input_length < sizeof(clock_input) - 1u)
+				clock_input[clock_input_length++] = c;
+			else
+				clock_input_overflow = true;
+		}
+	}
+}
+
+static void write_clock_reply(void)
+{
+	char line[96];
+	int length;
+	if (clock_error_pending)
+		length = snprintf(line, sizeof(line), "#TIME_ERROR,INVALID_COMMAND\r\n");
+	else if (clock_reply_pending)
+		length = snprintf(line, sizeof(line), "#TIME_SYNC,%llu,%llu\r\n",
+			(unsigned long long)clock_unix_us, (unsigned long long)clock_uptime_us);
+	else
+		return;
+	if (length > 0 && (size_t)length < sizeof(line) && cdc_write(line, (uint32_t)length))
+	{
+		if (clock_error_pending)
+			clock_error_pending = false;
+		else
+			clock_reply_pending = false;
+	}
+}
+
+static void write_fast_sample(uint64_t uptime_us)
+{
+	const uint32_t now = (uint32_t)uptime_us;
+	if (!cdc_fast_sample_due(now, &next_fast_us, &fast_missed))
+		return;
+
+	const usb_audio_state_t state = usb_audio_get_state();
+	const usb_audio_stats_t *stats = usb_audio_get_stats();
+	const uint32_t feedback = (state == USB_AUDIO_IDLE || state == USB_AUDIO_SWITCHING)
+		? 0u : (uint32_t)((double)stats->feedback_hz * 65.536 + 0.5);
+	const int32_t level_tenths = (int32_t)(usb_audio_get_feedback_level() * 10.0f + 0.5f);
+	const int32_t integral_millihz = (int32_t)(usb_audio_get_feedback_integrator_hz() * 1000.0f);
+	uint32_t out_age_us;
+	char age[16] = "";
+	if (usb_audio_get_out_age_us(&out_age_us))
+		snprintf(age, sizeof(age), "%lu", (unsigned long)out_age_us);
+	char unix_time[24] = "";
+	if (clock_synced)
+		snprintf(unix_time, sizeof(unix_time), "%llu",
+			(unsigned long long)(clock_unix_us + uptime_us - clock_uptime_us));
+
+	feedback_diagnostics_t feedback_diag;
+	const bool have_feedback_diag = usb_audio_get_feedback_diagnostics(&feedback_diag);
+	char diag_fields[112];
+	const int diag_length = feedback_diag_format(diag_fields, sizeof(diag_fields),
+		have_feedback_diag ? &feedback_diag : NULL, now);
+	if (diag_length < 0 || (size_t)diag_length >= sizeof(diag_fields))
+	{
+		fast_dropped++;
+		return;
+	}
+
+	char line[256];
+	const int length = snprintf(line, sizeof(line),
+		"FAST,%llu,%s,%u,%lu,%ld,%lu,%ld,%s,%lu,%lu,%s\r\n",
+		(unsigned long long)uptime_us, unix_time, (unsigned)state,
+		(unsigned long)audio_ring_total_frames(), (long)level_tenths,
+		(unsigned long)feedback, (long)integral_millihz, age,
+		(unsigned long)fast_missed, (unsigned long)fast_dropped, diag_fields);
+	if (length < 0 || (size_t)length >= sizeof(line) || !cdc_write(line, (uint32_t)length))
+		fast_dropped++;
 }
 
 // Caller holds trace_lock; no USB or audio-buffer operations run under this lock.
@@ -230,6 +446,20 @@ void cdc_diagnostics_silence_end(bool stopped)
 	spin_unlock(trace_lock, owner);
 }
 
+void cdc_diagnostics_trace_pcm(dma_pcm_trace_event_t event)
+{
+	if (trace_lock == NULL || event == DMA_PCM_TRACE_NONE)
+		return;
+	const cdc_trace_kind_t kind = event == DMA_PCM_TRACE_START ? TRACE_PCM_START :
+		(event == DMA_PCM_TRACE_END ? TRACE_PCM_END : TRACE_PCM_ABORT);
+	const cdc_trace_t trace = {
+		.uptime_us = time_us_64(), .kind = kind, .rate = audio_state.freq
+	};
+	const uint32_t owner = spin_lock_blocking(trace_lock);
+	trace_push(trace);
+	spin_unlock(trace_lock, owner);
+}
+
 void cdc_diagnostics_trace_state(usb_audio_state_t previous_state, usb_audio_state_t state)
 {
 	if (trace_lock == NULL)
@@ -265,6 +495,12 @@ static void write_pending_trace(void)
 			(unsigned long long)event.uptime_us, audio_state_name(event.from),
 			audio_state_name(event.to), (unsigned long)event.rate,
 			(unsigned long)event.ring, (unsigned long)event.dma_pool);
+	else if (event.kind == TRACE_PCM_START || event.kind == TRACE_PCM_END || event.kind == TRACE_PCM_ABORT)
+		length = snprintf(line, sizeof(line), "TRACE,%llu,%s,,,%lu,,,\r\n",
+			(unsigned long long)event.uptime_us,
+			event.kind == TRACE_PCM_START ? "PCM_START" :
+				(event.kind == TRACE_PCM_END ? "PCM_END" : "PCM_ABORT"),
+			(unsigned long)event.rate);
 	else
 		length = snprintf(line, sizeof(line), "TRACE,%llu,%s,,,,,,%lu\r\n",
 			(unsigned long long)event.uptime_us,
@@ -315,7 +551,14 @@ static bool start_session(void)
 		NULL,
 		"TRACE,UPTIME_US,EVENT,FROM,TO,RATE,RING,DMA_POOL,SILENCE_FRAMES\r\n",
 		"USB_EVENT,UPTIME_US32,GENERATION,OVERWRITTEN_BEFORE,EVENT\r\n",
-		"UNDERFLOW,MS,RING,DMA_POOL,RING_POOL,HOST_RATE,FEEDBACK_RATE,FB_LEVEL,FB_INTEG_HZ,USB_GAP_MAX_US,USB_OUT_AGE_US\r\n"
+		"UNDERFLOW,MS,RING,DMA_POOL,RING_POOL,HOST_RATE,FEEDBACK_RATE,FB_LEVEL,FB_INTEG_HZ,USB_GAP_MAX_US,USB_OUT_AGE_US\r\n",
+		"FAST,UPTIME_US,UNIX_US,STATE,RING,FB_LEVEL_X10,FEEDBACK_Q16,FB_INTEG_MILLIHZ,USB_OUT_AGE_US,MISSED,DROPPED,FB_DIAG_MODE,FB_DIAG_AGE_US,FB_P_MILLIHZ,FB_HF_MILLIHZ,FB_CORR_PPM_X10,FB_LIMIT_PPM_X10,FB_OUT_SAT,FB_I_SAT\r\n",
+		NULL,
+#if FB_EXPERIMENTAL_OFFSET_SEED
+		"OFFSET_SEED,UPTIME_US,RATE,VALID,SAVED_PPM,STOP_AGE_MS\r\n",
+		"OFFSET_UPDATE,UPTIME_US,RATE,ESTIMATE_PPM,CORRECTION_PPM,SLOPE_FRAMES_S,SATURATION_PCT,REASON,SAVED_VALID,SAVED_PPM\r\n",
+		"OFFSET_DROPPED,COUNT\r\n",
+#endif
 	};
 	char config_header[160];
 	const int config_header_length = snprintf(config_header, sizeof(config_header),
@@ -345,6 +588,13 @@ static bool start_session(void)
 	if (clock_header_length < 0 || (size_t)clock_header_length >= sizeof(clock_header))
 		return false;
 	headers[5] = clock_header;
+	char feedback_header[512];
+	const feedback_diag_config_t feedback_config = usb_audio_get_feedback_config();
+	const int feedback_header_length =
+		feedback_diag_format_config(feedback_header, sizeof(feedback_header), &feedback_config);
+	if (feedback_header_length < 0 || (size_t)feedback_header_length >= sizeof(feedback_header))
+		return false;
+	headers[10] = feedback_header;
 	while (session_header_pos < sizeof(headers) / sizeof(headers[0]))
 	{
 		const char *header = headers[session_header_pos];
@@ -354,10 +604,18 @@ static bool start_session(void)
 	}
 
 	reset_event_queue();
+#if FB_EXPERIMENTAL_OFFSET_SEED
+	offset_head = 0;
+	offset_count = 0;
+	offset_dropped = 0;
+#endif
 	memset(&usb_event_cursor, 0, sizeof(usb_event_cursor));
 	row_drop_count = 0;
 	const uint32_t now = time_us_32();
 	next_sample_us = now;
+	next_fast_us = now;
+	fast_missed = 0;
+	fast_dropped = 0;
 	next_ring_average_us = now;
 	ring_average_sum = 0;
 	ring_average_count = 0;
@@ -365,7 +623,6 @@ static bool start_session(void)
 	ring_max = 0;
 	max_hf_diff_session = 0;
 	const usb_audio_stats_t *stats = usb_audio_get_stats();
-	session_underflow_start = stats->underflow_count;
 	session_switch_start = stats->switch_count;
 	stream_start_count = usb_audio_get_state() == USB_AUDIO_STREAMING ? 1u : 0u;
 	stream_stop_count = 0;
@@ -438,12 +695,9 @@ static bool write_sample(uint32_t now)
 	const uint32_t free_max = stream_min_used < ring_capacity
 		? ring_capacity - stream_min_used : 0u;
 	const uint32_t free_min_pct = (free_min * 100u) / ring_capacity;
-	if (stats->underflow_count < session_underflow_start)
-		session_underflow_start = 0;
 	if (stats->switch_count < session_switch_start)
 		session_switch_start = 0;
-	const uint32_t underflow_count = stats->underflow_count >= session_underflow_start
-		? stats->underflow_count - session_underflow_start : stats->underflow_count;
+	const usb_audio_usb_counts_t usb_counts = usb_audio_get_usb_counts();
 	const uint32_t rate_change_count = stats->switch_count >= session_switch_start
 		? stats->switch_count - session_switch_start : stats->switch_count;
 	const uint32_t lcd_avg_us = lcd_timing.count != 0
@@ -479,7 +733,7 @@ static bool write_sample(uint32_t now)
 
 	const int appended = snprintf(line + written, sizeof(line) - (size_t)written,
 		",%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu",
-		(unsigned long)underflow_count,
+		(unsigned long)stats->underflow_boot_count,
 		(unsigned long)stats->usb_out_gap_max_us,
 		(unsigned long)ring_capacity,
 		(unsigned long)free_now,
@@ -512,8 +766,11 @@ static bool write_sample(uint32_t now)
 	if (usb_audio_get_out_age_us(&out_age_us))
 		snprintf(out_age_text, sizeof(out_age_text), "%lu", (unsigned long)out_age_us);
 	const int detail_length = snprintf(line + written, sizeof(line) - (size_t)written,
-		",%.1f,%.3f,%s\r\n", (double)usb_audio_get_feedback_level(),
-		(double)usb_audio_get_feedback_integrator_hz(), out_age_text);
+		",%.1f,%.3f,%s,%lu,%lu,%lu,%lu,%lu\r\n", (double)usb_audio_get_feedback_level(),
+		(double)usb_audio_get_feedback_integrator_hz(), out_age_text,
+		(unsigned long)usb_counts.reset_count, (unsigned long)usb_counts.suspend_count,
+		(unsigned long)usb_counts.resume_count, (unsigned long)usb_counts.dtr_assert_count,
+		(unsigned long)usb_counts.dtr_deassert_count);
 	if (detail_length < 0 || (size_t)detail_length >= sizeof(line) - (size_t)written)
 		goto failed;
 	written += detail_length;
@@ -822,21 +1079,20 @@ void cdc_diagnostics_task(void)
 			reset_event_queue();
 		}
 		session_header_pos = 0;
+		clock_synced = false;
+		clock_reply_pending = false;
+		clock_error_pending = false;
+		clock_input_length = 0;
+		clock_input_overflow = false;
 		return;
 	}
 
-	const uint32_t input_available = tud_cdc_available();
-	if (input_available != 0)
-	{
-		uint8_t discard[32];
-		const uint32_t discard_length = input_available < sizeof(discard)
-			? input_available : sizeof(discard);
-		tud_cdc_read(discard, discard_length);
-	}
+	service_clock_input();
 
 	if (!session_active && !start_session())
 		return;
 
+	write_clock_reply();
 	const uint32_t now = time_us_32();
 	sample_ring_level(now);
 	if ((int32_t)(now - next_sample_us) >= 0)
@@ -845,11 +1101,36 @@ void cdc_diagnostics_task(void)
 			row_drop_count++;
 	}
 	write_pending_anomalies(now);
+#if FB_EXPERIMENTAL_OFFSET_SEED
+	write_pending_offset();
+#endif
 	write_pending_trace();
 	write_pending_usb_event();
+	write_fast_sample(time_us_64());
 }
 
 #else
+
+#if FB_EXPERIMENTAL_OFFSET_SEED
+void cdc_diagnostics_offset_seed(uint64_t uptime_us, uint32_t rate, bool valid,
+	float saved_ppm, bool have_stop, uint64_t age_us)
+{
+	(void)uptime_us;
+	(void)rate;
+	(void)valid;
+	(void)saved_ppm;
+	(void)have_stop;
+	(void)age_us;
+}
+
+void cdc_diagnostics_offset_update(uint64_t uptime_us, uint32_t rate,
+	const feedback_offset_result_t *result)
+{
+	(void)uptime_us;
+	(void)rate;
+	(void)result;
+}
+#endif
 
 bool cdc_diagnostics_get_trace(uint32_t age, cdc_trace_t *event)
 {
@@ -912,6 +1193,11 @@ void cdc_diagnostics_trace_state(usb_audio_state_t previous_state, usb_audio_sta
 void cdc_diagnostics_silence_end(bool stopped)
 {
 	(void)stopped;
+}
+
+void cdc_diagnostics_trace_pcm(dma_pcm_trace_event_t event)
+{
+	(void)event;
 }
 
 void cdc_diagnostics_record_lcd_time(uint32_t duration_us)

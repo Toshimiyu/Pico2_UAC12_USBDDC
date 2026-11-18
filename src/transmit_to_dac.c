@@ -17,6 +17,28 @@
 #include "i2s_pio_interface.h"
 #include "i2s_rate.h"
 #include "cdc_diagnostics.h"
+#if FB_EXPERIMENTAL_LEVEL_SEED
+#include <stdatomic.h>
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "Feedback seed requires lock-free atomic integers");
+// A generation prevents an unfinished DMA fill from acknowledging a later stream.
+static atomic_uint feedback_seed_generation;
+static atomic_uint feedback_primed_generation;
+static uint32_t feedback_last_signaled_generation;
+
+uint32_t dma_tx_feedback_seed_arm(void)
+{
+    static uint32_t generation;
+    if (++generation == 0)
+        ++generation;
+    atomic_store_explicit(&feedback_seed_generation, generation, memory_order_release);
+    return generation;
+}
+
+bool dma_tx_feedback_seed_ready(uint32_t generation)
+{
+    return atomic_load_explicit(&feedback_primed_generation, memory_order_acquire) == generation;
+}
+#endif
 
 static const PIO pio = pio0;
 static const uint sm = 0;
@@ -108,6 +130,17 @@ static bool dma_tail_seen = false; // lone-block episode already counted
 static bool prefill_waiting_for_pio = false;
 static uint32_t output_start_us;
 
+#if USB_CDC_ENABLED
+static bool trace_pcm_active;
+
+static void dma_trace_pcm(bool next_pcm, bool aborted)
+{
+    const dma_pcm_trace_event_t event = dma_pcm_trace_update(&trace_pcm_active, next_pcm, aborted);
+    if (event != DMA_PCM_TRACE_NONE)
+        cdc_diagnostics_trace_pcm(event);
+}
+#endif
+
 bool calc_pwm_clkdiv_and_wrap_us(float target_period_us, uint16_t *wrap_out, float *clkdiv_out);
 void set_pwm_isr_1(float period_us);
 void set_period_pwm_us(float period_us);
@@ -150,6 +183,7 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
 #if USB_CDC_ENABLED
         if (!dma_running_pcm)
             cdc_diagnostics_silence_end(false);
+        dma_trace_pcm(true, false);
 #endif
         const uint32_t rp = dma_tx.rp;
         buffer = dma_tx.data[rp].tx_buf;
@@ -159,13 +193,14 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
     }
     else
     {
-        const usb_audio_state_t state = usb_audio_get_state();
+            const usb_audio_state_t state = usb_audio_get_state();
         if (!enable_output ||
             (state != USB_AUDIO_STREAMING && state != USB_AUDIO_OVERFLOW_FATAL))
             return;
         buffer = dma_silence;
         words = DMA_SILENCE_FRAMES * 2u;
 #if USB_CDC_ENABLED
+        dma_trace_pcm(false, false);
         cdc_diagnostics_silence_block(DMA_SILENCE_FRAMES);
 #endif
         dma_running_pcm = false;
@@ -187,6 +222,10 @@ static void __not_in_flash_func(dma_tx_irq_handler)(void)
         dma_tx.using--;
     dma_running = false;
     dma_tx_schedule();
+#if USB_CDC_ENABLED
+    if (!dma_running)
+        dma_trace_pcm(false, false);
+#endif
 }
 
 void reset_i2s_freq(void)
@@ -277,6 +316,10 @@ void __not_in_flash_func(dma_tx_start)(void)
     }
     dma_diag.loop_prev_us = dma_diag.armed ? loop_now_us : 0;
 
+#if FB_EXPERIMENTAL_LEVEL_SEED
+    const uint32_t seed_generation =
+        atomic_load_explicit(&feedback_seed_generation, memory_order_acquire);
+#endif
     const usb_audio_state_t state = usb_audio_get_state();
     const bool ring_paused = state == USB_AUDIO_BUFFERING || state == USB_AUDIO_UNDERFLOW_FATAL;
     if (ring_paused)
@@ -329,6 +372,9 @@ void __not_in_flash_func(dma_tx_start)(void)
         return;
     }
 
+#if FB_EXPERIMENTAL_LEVEL_SEED
+    bool queued_streaming_pcm = false;
+#endif
     while (dma_tx.using < SIZE_DMA_TX_BUF_STACK)
     {
         const usb_audio_state_t fetch_state = usb_audio_get_state();
@@ -362,7 +408,20 @@ void __not_in_flash_func(dma_tx_start)(void)
         dma_tx.wp = (wp + 1u) % DEPTH_DMA_TX_BUFFER;
         dma_tx.using++;
         restore_interrupts(irq_state);
+#if FB_EXPERIMENTAL_LEVEL_SEED
+        if (fetch_state == USB_AUDIO_STREAMING)
+            queued_streaming_pcm = true;
+#endif
     }
+
+#if FB_EXPERIMENTAL_LEVEL_SEED
+    if (queued_streaming_pcm && dma_tx.using >= SIZE_DMA_TX_BUF_STACK &&
+        seed_generation != feedback_last_signaled_generation)
+    {
+        atomic_store_explicit(&feedback_primed_generation, seed_generation, memory_order_release);
+        feedback_last_signaled_generation = seed_generation;
+    }
+#endif
 
     if (dma_tx.using == 1 && get_size_using(&buffer_audio) == 0)
     {
@@ -392,6 +451,7 @@ void dma_stop_and_clear(void)
 
 #if USB_CDC_ENABLED
     cdc_diagnostics_silence_end(true);
+    dma_trace_pcm(false, true);
 #endif
     pio_sm_clear_fifos(pio0, 0);
     pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);

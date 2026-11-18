@@ -207,7 +207,7 @@ static uint8_t splash_stage = 0;
 static uint64_t splash_ready_start_us = 0;
 static bool splash_ready_detail_expired = false;
 static uint8_t splash_ready_clear_row = 0;
-static display_page_t current_page = DISPLAY_PAGE_BOOT;
+static volatile display_page_t current_page = DISPLAY_PAGE_BOOT;
 static bool page_clear_pending = false;
 static uint16_t page_clear_row = 0;
 static bool page_ready = true;
@@ -765,7 +765,11 @@ static const char *const boot_steps[6] = {
     "Display Initialization",
     "DAC Initialization",
     "Core1 Audio Engine",
+#if USB_CDC_ENABLED
+    "FFT Disabled",
+#else
     "FFT Initialization",
+#endif
     "USB Audio Ready",
     "System Ready"
 };
@@ -789,7 +793,7 @@ static const char *const boot_steps[6] = {
     lcd_draw_rect(20, 88, 280, 70, COLOR_DIVIDER);
 
     lcd_draw_string(28, 95,  "Architecture : Pico2 & PCM5100A", COLOR_FREQ_TEXT, 0x0081, 1);
-    lcd_draw_string(28, 109, "Version      : v" FW_VERSION,   COLOR_FREQ_TEXT, 0x0081, 1);
+    lcd_draw_string(28, 109, "Version      : v" FW_DISPLAY_VERSION, COLOR_FREQ_TEXT, 0x0081, 1);
 
 #if USB_AUDIO_CLASS_VERSION == 1
     lcd_draw_string(28, 123, "USB Audio    : UAC1", COLOR_FREQ_TEXT, 0x0081, 1);
@@ -820,7 +824,11 @@ void display_rta_set_boot_stage(uint8_t stage)
         "Display Initialization",
         "DAC Initialization",
         "Core1 Audio Engine",
+#if USB_CDC_ENABLED
+        "FFT Disabled",
+#else
         "FFT Initialization",
+#endif
         "USB Audio Ready",
         "System Ready"
     };
@@ -1025,6 +1033,10 @@ display_page_t display_rta_get_page(void)
 
 void display_rta_set_page(display_page_t page)
 {
+#if USB_CDC_ENABLED
+    if (page == DISPLAY_PAGE_PLAYBACK)
+        return;
+#endif
     if (page >= DISPLAY_PAGE_COUNT || page == current_page)
     {
         return;
@@ -1215,7 +1227,7 @@ display_button_action_t display_rta_process_buttons(void)
 
         if (x_pressed)
         {
-            display_rta_set_page((display_page_t)((current_page + 1) % DISPLAY_PAGE_COUNT));
+            display_rta_set_page(display_rta_next_page(current_page));
             return DISPLAY_BUTTON_ACTION_PAGE_CHANGED;
         }
         return DISPLAY_BUTTON_ACTION_NONE;
@@ -1228,13 +1240,14 @@ display_button_action_t display_rta_process_buttons(void)
     if (!x_pressed)
         return DISPLAY_BUTTON_ACTION_NONE;
 
-    const display_page_t next_page = (display_page_t)((current_page + 1) % DISPLAY_PAGE_COUNT);
+    const display_page_t next_page = display_rta_next_page(current_page);
     display_rta_set_page(next_page);
     return DISPLAY_BUTTON_ACTION_PAGE_CHANGED;
 }
 
+#if !USB_CDC_ENABLED
 bool display_rta_process_fft_left(void) {
-if (!display_ready) return false;
+if (!display_ready || current_page != DISPLAY_PAGE_PLAYBACK) return false;
 
 const uint32_t now = time_us_32();
 const bool timed_out = audio_data_seen && (uint32_t)(now - audio_last_data_us) >= 200000u;
@@ -1253,6 +1266,7 @@ uint8_t spectrum_r[SPECTRUM_BAND_COUNT];
 if (spectrum_process_right(spectrum_r))
 display_rta_set_bands(spectrum_l, spectrum_r);
 }
+#endif
 
 static bool peak_decay_due(void) {
 const uint32_t now = time_us_32();

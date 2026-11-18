@@ -60,9 +60,10 @@ static void boot_wait_ms(uint32_t ms)
 }
 
 
-// Store the audio format shown in the previous frame (added).
+#if !USB_CDC_ENABLED
 static uint32_t last_display_freq = 0;
 static uint8_t last_display_bit_depth = 0;
+#endif
 extern volatile uint32_t audio_last_data_us;
 extern volatile bool audio_data_seen;
 
@@ -112,10 +113,12 @@ static void display_service(void)
 			startup_log_init();
 		}
 #endif
+#if !USB_CDC_ENABLED
 		else if (page == DISPLAY_PAGE_PLAYBACK)
 		{
 			display_rta_set_format(audio_state.bit_depth, (float)audio_state.freq / 1000.0f);
 		}
+#endif
 	}
 
 	if (!display_rta_page_ready())
@@ -125,11 +128,14 @@ static void display_service(void)
 
 	const display_page_t page = display_rta_get_page();
 
+#if !USB_CDC_ENABLED
 	if (page == DISPLAY_PAGE_PLAYBACK)
 	{
 		display_rta_render_service();
 	}
-	else if (page == DISPLAY_PAGE_DIAGNOSTICS)
+	else
+#endif
+	if (page == DISPLAY_PAGE_DIAGNOSTICS)
 	{
 		debug_gauge_service();
 	}
@@ -241,8 +247,10 @@ int main(void)
 	multicore_launch_core1(core1_main);
 
 
+#if !USB_CDC_ENABLED
 	spectrum_init();
 	spectrum_set_sample_rate(audio_state.freq);
+#endif
 
 
 
@@ -269,8 +277,12 @@ int main(void)
 	display_rta_set_boot_stage(5);
 	boot_wait_ms(1000);
 
-	// Show the playback screen after startup; use X/Y to switch to the boot or diagnostics screen.
+	// Show the diagnostics screen in CDC builds; otherwise start on playback.
+#if USB_CDC_ENABLED
+	display_rta_set_page(DISPLAY_PAGE_DIAGNOSTICS);
+#else
 	display_rta_set_page(DISPLAY_PAGE_PLAYBACK);
+#endif
 
 	// watchdog_enable(50, 1);
 
@@ -285,8 +297,7 @@ int main(void)
 
 		sleep_us(1);
 
-		// --- Display control ---
-		
+#if !USB_CDC_ENABLED
 		// Update the display when the USB audio format (sample rate / bit depth) changes.
     	if (audio_state.freq != last_display_freq || audio_state.bit_depth != last_display_bit_depth)
     	{
@@ -312,6 +323,7 @@ int main(void)
         display_rta_reset_levels();
 	        inactivity_screen_reset = true;
 	    }
+#endif
 
 	    // Only the active page is drawn; diagnostics no longer overlays the playback screen.
 	    display_service();

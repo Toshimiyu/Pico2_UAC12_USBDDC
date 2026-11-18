@@ -36,29 +36,16 @@ void core1_main()
 	{
 		if(TEST_MODE) gpio_put(TEST_PIN2, true);
 		dma_tx_start();
+#if !USB_CDC_ENABLED
 		// FFT calculation only; all blocking TFT writes are serviced by Core0.
 		// One channel per step, with a DMA service in between, so the DMA chain is never left
 		// unattended for a whole two-channel FFT.
-#if USB_CDC_ENABLED
-		const bool measure_fft = cdc_diagnostics_is_active();
-		const uint32_t fft_left_start_us = measure_fft ? time_us_32() : 0u;
-#endif
 		if (display_rta_process_fft_left())
 		{
-#if USB_CDC_ENABLED
-			if (measure_fft)
-			cdc_diagnostics_record_fft_time(time_us_32() - fft_left_start_us);
-#endif
 			dma_tx_start();
-#if USB_CDC_ENABLED
-			const uint32_t fft_right_start_us = measure_fft ? time_us_32() : 0u;
-#endif
 			display_rta_process_fft_right();
-#if USB_CDC_ENABLED
-			if (measure_fft)
-			cdc_diagnostics_record_fft_time(time_us_32() - fft_right_start_us);
-#endif
 		}
+#endif
 		if(TEST_MODE) gpio_put(TEST_PIN2, false);
 		sleep_us(1);
 	}

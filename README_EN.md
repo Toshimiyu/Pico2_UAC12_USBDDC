@@ -67,6 +67,12 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 <details>
 <summary>Show version history</summary>
 
+### V2.2
+
+- Set the feedback target to 50% of ring capacity (2048 frames) and enable level initialization, conditional integration, rate-scaled gains, and clock-offset seed reuse by default. Seed invalidation after USB re-enumeration remains unverified.
+- Change the UAC1/UAC2 Output Terminal from `0x0602` (Digital Audio Interface) to `0x0301` (Speaker). Recognition by Android's standard driver after this change has not been verified.
+- Add OFFSET_SEED/UPDATE, USB event counters, PCM traces, and other CDC diagnostics. CDC diagnostic builds disable FFT calculation and display to prioritize diagnostics and log capture.
+
 ### V2.1
 
 - **Specification change:** Change the UAC1/UAC2 Output Terminal from `0x0304` (Desktop Speaker) to `0x0602` (Digital Audio Interface). On Android, use the UAC1 build and Onkyo HF Player with its USB driver; the UAC2 build is intended for Windows.
@@ -253,16 +259,16 @@ Pico2 + Pico Audio Pack (PCM5100A) + Pico Display Pack 2.0
 
 ## Display and Diagnostics
 
-Use X to cycle through Boot, Playback, and Diagnostics; CDC-enabled builds also include Playback Start Log. On the Diagnostics screen, A/B navigate USB event history, A+B toggles audio-state history, and holding Y for 3 seconds resets diagnostic values and USB event history. For screen details, event symbols, and anomaly codes, see the [diagnostic event reference](docs/DIAGNOSTICS_EN.md).
+In normal builds, use X to cycle through Boot, Playback, and Diagnostics. CDC-enabled builds (`USB_BRINGUP_LEVEL=3`) disable the FFT display and processing, switch from Boot to Diagnostics after startup, and use X to cycle through Boot, Diagnostics, and Playback Start Log. On the Diagnostics screen, A/B navigate USB event history, A+B toggles audio-state history, and holding Y for 3 seconds resets diagnostic values and USB event history. For screen details, event symbols, and anomaly codes, see the [diagnostic event reference](docs/DIAGNOSTICS_EN.md).
 
 ## Supported Operating Systems
 
 - Windows 11 (verified on Windows 11 26H2. When playing in WASAPI mode with Foobar2000, match the source sample rate to the Windows 11 sample rate before playback. With ASIO4ALL or other ASIO drivers, playback works normally even if the sample rates differ. Verified with ASIO4ALL 2.22.)
 - Android 16 (verified on a Sony XQ-ES44 smartphone with the paid Onkyo HF Player v2.15.2 USB driver and UAC1)
 
-### Specification Notes (V2.1)
+### Current Specification Notes
 
-- Both UAC1 and UAC2 use Output Terminal `0x0602` (Digital Audio Interface). The tested Android standard driver does not recognize this configuration, and other players using Android's standard audio output are outside the support scope.
+- The current firmware uses Output Terminal `0x0301` (Generic Speaker / Speaker Output) for both UAC1 and UAC2. Recognition by Android's standard driver after this change has not been verified.
 - On Android, use the UAC1 build and Onkyo HF Player with its USB driver. HF Player's proprietary driver does not support UAC2, so the UAC2 build is intended for Windows.
 - Why HF Player's proprietary driver works with this configuration is unconfirmed. Future app or driver updates may change its behavior.
 - `bcdDevice` is `0x0303` for UAC1 and `0x0313` for UAC2. These values were updated to distinguish the descriptors from earlier versions, but Windows may retain old device information.

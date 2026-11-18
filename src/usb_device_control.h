@@ -11,6 +11,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "usb_audio_config.h"
+#if USB_CDC_ENABLED
+#include "feedback_diagnostics.h"
+#endif
 
 // ---- Bring-up level (no debug equipment needed: flash and observe) -----------------------------
 //   0 : USB completely OFF  (original boot flow only: splash -> FFT screen). If this does not boot,
@@ -36,6 +39,9 @@ typedef struct
 	volatile usb_audio_state_t state;
 	volatile uint32_t overflow_count;
 	volatile uint32_t underflow_count;
+#if USB_CDC_ENABLED
+	volatile uint32_t underflow_boot_count;
+#endif
 	volatile uint32_t fifo_resync_count;	// TinyUSB software FIFO had to be flushed
 	volatile uint32_t rate_limit_violation; // host selected a bit depth / rate pair that Full-Speed cannot carry
 	volatile int32_t level_now;				// audio ring-buffer usage [samples]
@@ -138,6 +144,20 @@ uint32_t usb_audio_get_host_rate_hz(void);
 uint32_t usb_audio_get_feedback_hz(void);
 float usb_audio_get_feedback_level(void);
 float usb_audio_get_feedback_integrator_hz(void);
+#if USB_CDC_ENABLED
+bool usb_audio_get_feedback_diagnostics(feedback_diagnostics_t *snapshot);
+feedback_diag_config_t usb_audio_get_feedback_config(void);
+typedef struct
+{
+	uint32_t reset_count;
+	uint32_t suspend_count;
+	uint32_t resume_count;
+	uint32_t dtr_assert_count;
+	uint32_t dtr_deassert_count;
+	bool dtr;
+} usb_audio_usb_counts_t;
+usb_audio_usb_counts_t usb_audio_get_usb_counts(void);
+#endif
 bool usb_audio_get_out_age_us(uint32_t *age_us);
 const underflow_snapshot_t *usb_audio_get_last_underflow_snapshot(void);
 uint32_t usb_audio_get_feedback_limit_hz(void);

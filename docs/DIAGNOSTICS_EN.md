@@ -29,6 +29,9 @@ The USB log is event-driven, not periodic. Holding Y for 3 seconds clears the di
 | M | USB Mount |
 | J | Initial audio state during USB initialization (IDLE) |
 | P | CDC connection status change (01: USB configured, not suspended and DTR asserted; 00: otherwise) |
+| L | CDC line-state request (first value: DTR, second: RTS; CDC-enabled builds only) |
+| Q | USB suspend (first value: remote wakeup enabled; CDC-enabled builds only) |
+| V | USB resume (CDC-enabled builds only) |
 | A | Host request for Audio Streaming Interface Alt=0 |
 | I | Host request for Audio Streaming Interface Alt>0 |
 | O | `usb_audio_stream_open()` |
@@ -61,17 +64,17 @@ Failure
 
 ## Display Specification (Pico Display Pack 2.0)
 
-At startup, the boot screen is displayed. After initialization completes, the playback screen is shown.
+At startup, the boot screen is displayed. After initialization completes, normal builds show the playback screen, while CDC-enabled builds (`USB_BRINGUP_LEVEL=3`) show the diagnostic screen. CDC-enabled builds disable the playback screen, FFT processing, and FFT input capture.
 After startup completes, the lower `System Ready` message is cleared after about 0.5 seconds; the upper message remains.
 
 The X button on Pico Display Pack 2.0 cycles through the following screens in one direction:
 
 - Boot Screen
-- Playback Screen
+- Playback Screen (CDC-disabled builds only)
 - Diagnostic Screen
 - Playback Start Log screen (CDC-enabled builds only)
 
-- X : Next screen (Boot → Playback → Diagnostics → Playback Start Log → Boot with CDC enabled; otherwise omit Playback Start Log)
+- X : Next screen (Boot → Diagnostics → Playback Start Log → Boot with CDC enabled; Boot → Playback → Diagnostics → Boot otherwise)
 
 On the diagnostic screen:
 
@@ -126,9 +129,7 @@ If the FFT bars and peak meters do not move while music is playing, first check 
 
 ### Diagnostic Screen
 
-Press the X button on the playback screen to switch to the diagnostic screen.
-
-The X button cycles through Boot → Playback → Diagnostics, then through Playback Start Log in CDC-enabled builds, before returning to Boot. Y does not navigate between screens; holding it for 3 seconds on the Diagnostics screen resets the diagnostic counters and USB event log.
+The X button cycles through Boot → Playback → Diagnostics in normal builds, or Boot → Diagnostics → Playback Start Log in CDC-enabled builds. Y does not navigate between screens; holding it for 3 seconds on the Diagnostics screen resets the diagnostic counters and USB event log.
 
 #### Audio Status Information
 

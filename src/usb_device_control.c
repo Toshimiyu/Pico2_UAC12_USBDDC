@@ -27,6 +27,18 @@
 #include "common_types.h"
 #include "common.h"
 #include "mute_ramp.h"
+#if FB_EXPERIMENTAL_LEVEL_SEED
+#include "feedback_level_seed.h"
+#endif
+#if FB_EXPERIMENTAL_ANTI_WINDUP
+#include "feedback_anti_windup.h"
+#endif
+#if FB_EXPERIMENTAL_RATE_GAINS
+#include "feedback_rate_gains.h"
+#endif
+#if FB_EXPERIMENTAL_OFFSET_SEED
+#include "feedback_offset_estimator.h"
+#endif
 #include "ringbuffer.h"
 #include "display_rta.h"
 #include "transmit_to_dac.h"
@@ -46,11 +58,10 @@ volatile bool audio_data_seen = false;
 #endif
 
 // Ring buffer watermarks (buffer_audio, PCM frames)
-#define FB_TARGET_LEVEL (SIZE_BUFFER_FB_THRESHOLD)
 #define LEVEL_LOW_MARK (SIZE_AUDIO_RING_FRAMES / 32)						   // below -> UNDERFLOW_FATAL
 #define LEVEL_HIGH_MARK (SIZE_AUDIO_RING_FRAMES - SIZE_AUDIO_RING_FRAMES / 32)   // above -> OVERFLOW_FATAL
-#define LEVEL_OVERFLOW_RECOVER (FB_TARGET_LEVEL + SIZE_AUDIO_RING_FRAMES / 8) // OVERFLOW_FATAL -> BUFFERING
-#define LEVEL_UNDERFLOW_RECOVER (FB_TARGET_LEVEL / 2)					   // UNDERFLOW_FATAL -> BUFFERING
+#define LEVEL_OVERFLOW_RECOVER (SIZE_BUFFER_FB_THRESHOLD + SIZE_AUDIO_RING_FRAMES / 8) // OVERFLOW_FATAL -> BUFFERING
+#define LEVEL_UNDERFLOW_RECOVER (SIZE_BUFFER_FB_THRESHOLD / 2)				   // UNDERFLOW_FATAL -> BUFFERING
 
 // PI controller (units: Hz of requested sample rate per input sample of level error)
 #define FB_KP (0.50f)			   // proportional [Hz / sample]
@@ -65,6 +76,9 @@ volatile bool audio_data_seen = false;
 #define FB_BOOST_START_ERR (128.0f)
 #define FB_BOOST_FULL_ERR  (512.0f)
 #define FB_BOOST_MAX_PPM   (1000.0f)
+#define FB_TRANSIENT_DURATION_US (1000000u)
+#define FB_TRANSIENT_GAIN_START (0.25f)
+#define FB_TRANSIENT_GAIN_SPAN (0.75f)
 #if USB_CDC_ENABLED
 #define EVT_LOG_N 256
 #else
@@ -98,6 +112,9 @@ volatile bool audio_data_seen = false;
 #if FIXED_FEEDBACK_TEST
 #warning "FIXED_FEEDBACK_TEST is enabled: feedback control is OFF (diagnostic build only)"
 #endif
+#if FIXED_FEEDBACK_TEST && FB_EXPERIMENTAL_OFFSET_SEED
+#error FB_EXPERIMENTAL_OFFSET_SEED requires PI feedback
+#endif
 
 // (UART diagnostics removed: the buffer level is shown by debug_gauge.c on the LCD)
 
@@ -125,6 +142,15 @@ static uint32_t anomaly_log_last_us[14];
 static volatile uint32_t rx_packet_last_us;
 static volatile uint32_t rx_packet_gap_pending_us;
 static volatile bool rx_packet_gap_pending;
+#if USB_CDC_ENABLED
+static usb_audio_usb_counts_t usb_counts;
+#endif
+#if FB_EXPERIMENTAL_OFFSET_SEED
+static feedback_offset_t feedback_offset;
+static uint32_t offset_usb_reset_pending;
+static uint32_t offset_usb_suspend_pending;
+_Static_assert(__atomic_always_lock_free(sizeof(uint32_t), 0), "offset event flags must be lock-free");
+#endif
 
 typedef struct
 {
@@ -148,6 +174,26 @@ static char hex_digit(uint8_t value)
 void usb_audio_record_event(char kind, uint8_t a, uint8_t b, uint8_t c, bool ok, bool has_c)
 {
 	const uint32_t owner = spin_lock_blocking(event_history_lock);
+#if USB_CDC_ENABLED
+	if (kind == 'B' && (a == DCD_EVENT_BUS_RESET_END || a == DCD_EVENT_UNPLUGGED))
+	{
+		if (a == DCD_EVENT_BUS_RESET_END)
+			usb_counts.reset_count++;
+		usb_counts.dtr = false;
+	}
+	else if (kind == 'Q')
+		usb_counts.suspend_count++;
+	else if (kind == 'V')
+		usb_counts.resume_count++;
+	else if (kind == 'L' && usb_counts.dtr != (a != 0u))
+	{
+		usb_counts.dtr = a != 0u;
+		if (usb_counts.dtr)
+			usb_counts.dtr_assert_count++;
+		else
+			usb_counts.dtr_deassert_count++;
+	}
+#endif
 	const uint32_t index = evt_total % EVT_LOG_N;
 	char *event = evt_log[index];
 	evt_time_us[index] = time_us_32();
@@ -162,6 +208,45 @@ void usb_audio_record_event(char kind, uint8_t a, uint8_t b, uint8_t c, bool ok,
 	evt_total++;
 	spin_unlock(event_history_lock, owner);
 }
+
+#if USB_CDC_ENABLED
+usb_audio_usb_counts_t usb_audio_get_usb_counts(void)
+{
+	const uint32_t owner = spin_lock_blocking(event_history_lock);
+	const usb_audio_usb_counts_t snapshot = usb_counts;
+	spin_unlock(event_history_lock, owner);
+	return snapshot;
+}
+#endif
+
+#if USB_CDC_ENABLED || FB_EXPERIMENTAL_OFFSET_SEED
+void tud_suspend_cb(bool remote_wakeup_en)
+{
+#if FB_EXPERIMENTAL_OFFSET_SEED
+	__atomic_store_n(&offset_usb_suspend_pending, 1u, __ATOMIC_RELEASE);
+#endif
+#if USB_CDC_ENABLED
+	usb_audio_record_event('Q', remote_wakeup_en ? 1u : 0u, 0, 0, true, false);
+#else
+	(void)remote_wakeup_en;
+#endif
+}
+
+void tud_resume_cb(void)
+{
+#if USB_CDC_ENABLED
+	usb_audio_record_event('V', 0, 0, 0, true, false);
+#endif
+}
+#endif
+
+#if USB_CDC_ENABLED
+void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts)
+{
+	if (itf == 0u)
+		usb_audio_record_event('L', dtr ? 1u : 0u, rts ? 1u : 0u, 0, true, false);
+}
+#endif
 
 void usb_audio_get_event(uint32_t age, char out[8])
 {
@@ -315,6 +400,9 @@ void tud_event_hook_cb(uint8_t rhport, uint32_t eventid, bool in_isr)
 		eventid == DCD_EVENT_BUS_RESET_END ||
 		eventid == DCD_EVENT_UNPLUGGED)
 	{
+#if FB_EXPERIMENTAL_OFFSET_SEED
+		__atomic_store_n(&offset_usb_reset_pending, 1u, __ATOMIC_RELEASE);
+#endif
 		usb_audio_log_anomaly(4, (uint8_t)eventid, "EVENT_ID", eventid);
 		usb_audio_record_event('B', (uint8_t)eventid, rhport, 0, true, true);
 	}
@@ -327,9 +415,18 @@ typedef struct
 	uint32_t last_us;
 	uint32_t last_fb;
 	bool force_send;
+#if FB_EXPERIMENTAL_LEVEL_SEED
+	bool level_seed_pending;
+	uint32_t level_seed_generation;
+#endif
 	uint32_t transient_counter_us; // 【追加】切り替え直後の過渡期タイマー (us)
 } fb_ctrl_t;
 static fb_ctrl_t fb;
+
+#if USB_CDC_ENABLED
+static feedback_diagnostics_t fb_diagnostics;
+static bool fb_diagnostics_valid;
+#endif
 
 static underflow_snapshot_t last_underflow_snapshot;
 static bool underflow_snapshot_valid;
@@ -464,9 +561,32 @@ static void level_stats_reset(void);
 static void set_state(usb_audio_state_t s)
 {
     const usb_audio_state_t previous_state = stats.state;
+#if FB_EXPERIMENTAL_OFFSET_SEED
+    if (previous_state == USB_AUDIO_STREAMING && s != USB_AUDIO_STREAMING)
+        feedback_offset_stop(&feedback_offset, time_us_64());
+    if (previous_state != USB_AUDIO_STREAMING && s == USB_AUDIO_STREAMING)
+    {
+        const uint64_t now = time_us_64();
+        const bool valid = feedback_offset_start(&feedback_offset, now);
+        fb.integ_hz = valid ? feedback_offset.saved_ppm * (float)audio_state.freq * 1e-6f : 0.0f;
+        cdc_diagnostics_offset_seed(now, audio_state.freq, valid,
+            valid ? feedback_offset.saved_ppm : 0.0f, feedback_offset.have_stop,
+            feedback_offset.have_stop ? now - feedback_offset.last_stop_us : 0u);
+    }
+#endif
+#if FB_EXPERIMENTAL_LEVEL_SEED
+    if (previous_state != s && s == USB_AUDIO_STREAMING)
+    {
+        fb.level_seed_generation = dma_tx_feedback_seed_arm();
+        fb.level_seed_pending = true;
+    }
+#endif
 #if USB_CDC_ENABLED
     if (previous_state != s)
+    {
+        fb_diagnostics_valid = false;
         cdc_diagnostics_trace_state(previous_state, s);
+    }
 #endif
     stats.state = s;
 
@@ -516,11 +636,14 @@ void usb_audio_set_diagnostics_enabled(bool enabled)
 
 static void fb_reset(void)
 {
+#if USB_CDC_ENABLED
+	fb_diagnostics_valid = false;
+#endif
 	fb.level_f = (float)audio_ring_total_frames();
 	fb.integ_hz = 0.0f;
 	fb.last_us = time_us_32();
 	fb.force_send = true;
-	fb.transient_counter_us = 1000000u; // 【追加】切替後 1.0秒間は過渡期としてゲインを絞る
+	fb.transient_counter_us = FB_TRANSIENT_DURATION_US; // 【追加】切替後 1.0秒間は過渡期としてゲインを絞る
 }
 
 static void service_rx(void);
@@ -930,6 +1053,7 @@ static void __not_in_flash_func(pcm_to_float)(const uint8_t *src, uint32_t frame
 	}
 }
 
+#if !USB_CDC_ENABLED
 static void report_peak(const float *left, const float *right, uint32_t frames)
 {
 	float peak_l = 0.0f, peak_r = 0.0f;
@@ -952,6 +1076,7 @@ static void report_peak(const float *left, const float *right, uint32_t frames)
 	uint8_t level_r = (uint8_t)fminf(fmaxf(level_r_f, 0.0f), 100.0f);
 	display_rta_set_peak(level_l, level_r);
 }
+#endif
 
 static void discard_invalid_pcm(uint8_t anomaly_code, const char *detail_name,
 								uint32_t detail_value, uint32_t frame_bytes,
@@ -1119,8 +1244,10 @@ static void service_rx(void)
 			pcm_stereo[2u * i + 1u] = (int32_t)ep_Rch[i];
 		}
 
+#if !USB_CDC_ENABLED
 		report_peak(ep_Lch, ep_Rch, frames);
 		spectrum_feed_block(ep_Lch, ep_Rch, frames);
+#endif
 		if (ringbuf_write_array_spinlock(pcm_stereo, frames * 2u, &buffer_audio) < 0)
 		{
 			reset_pcm_candidate_history();
@@ -1225,6 +1352,9 @@ static void service_state(void)
 		else if (ring_pool_level <= LEVEL_LOW_MARK)
 		{
 			stats.underflow_count++;
+#if USB_CDC_ENABLED
+			stats.underflow_boot_count++;
+#endif
 			last_underflow_snapshot = (underflow_snapshot_t){
 				.timestamp_us = time_us_32(),
 				.level = level,
@@ -1293,20 +1423,42 @@ if (dt > 0.02f)
             fb.transient_counter_us = 0;
 
         // 切替直後はゲインを 0.25倍からスタートし、1秒かけて 1.0倍 に滑らかに戻す
-        float progress = 1.0f - ((float)fb.transient_counter_us / 1000000.0f);
-        transient_scale = 0.25f + 0.75f * progress;
+        float progress = 1.0f - ((float)fb.transient_counter_us / (float)FB_TRANSIENT_DURATION_US);
+        transient_scale = FB_TRANSIENT_GAIN_START + FB_TRANSIENT_GAIN_SPAN * progress;
     }
 
-    float effective_ki = FB_KI * transient_scale;
-    float effective_kp = FB_KP * transient_scale;
 const uint32_t fs = audio_state.freq;
+#if FB_EXPERIMENTAL_RATE_GAINS
+const float base_kp = feedback_rate_kp(fs);
+const float effective_ki = feedback_rate_ki(base_kp) * transient_scale;
+const float effective_kp = base_kp * transient_scale;
+#else
+const float effective_ki = FB_KI * transient_scale;
+const float effective_kp = FB_KP * transient_scale;
+#endif
+#if FB_EXPERIMENTAL_LEVEL_SEED
+const bool dma_primed = fb.level_seed_pending && st == USB_AUDIO_STREAMING &&
+    dma_tx_feedback_seed_ready(fb.level_seed_generation);
+#endif
 const float level = (float)audio_ring_total_frames();
 
 // Low-pass the level so that block-wise Core0 / DMA access does not leak into the feedback
 const float alpha = dt / (FB_LEVEL_TAU_S + dt);
+#if FB_EXPERIMENTAL_LEVEL_SEED
+fb.level_f = feedback_level_seed_update(fb.level_f, level, alpha,
+    &fb.level_seed_pending, dma_primed);
+#else
 fb.level_f += (level - fb.level_f) * alpha;
+#endif
 
 float adj_hz = 0.0f;
+#if USB_CDC_ENABLED
+float diag_p_hz = 0.0f;
+float diag_hf_hz = 0.0f;
+float diag_limit_hz = 0.0f;
+int8_t diag_output_saturation = 0;
+int8_t diag_integral_saturation = 0;
+#endif
 #if FIXED_FEEDBACK_TEST
 // Diagnostic: control OFF, constant (usually zero) offset
 fb.integ_hz = 0.0f;
@@ -1360,10 +1512,8 @@ if (host_rate > 0.0f && fb_rate > 0.0f)
 }
 
 float p =
-    effective_kp * err +     // 【変更】FB_KP から effective_kp に変更
+    effective_kp * err +
     FB_HF_GAIN * hf_error;
-
-float integ_next = fb.integ_hz + effective_ki * err * dt; // 【変更】FB_KI から effective_ki に変更
 
 float integ_lim =
     (float)fs * FB_BASE_LIMIT_PPM * 1e-6f;
@@ -1371,13 +1521,30 @@ float integ_lim =
 if (integ_lim > (float)FB_ADJ_LIMIT)
     integ_lim = (float)FB_ADJ_LIMIT;
 
+#if FB_EXPERIMENTAL_ANTI_WINDUP
+float integ_next = feedback_conditional_integral(fb.integ_hz,
+    effective_ki * err * dt, p, lim, integ_lim);
+#else
+float integ_next = fb.integ_hz + effective_ki * err * dt;
 if (integ_next > integ_lim)
     integ_next = integ_lim;
 
 if (integ_next < -integ_lim)
     integ_next = -integ_lim;
+#endif
 
 adj_hz = p + integ_next;
+
+#if FB_EXPERIMENTAL_OFFSET_SEED
+const bool offset_output_saturated = adj_hz >= lim || adj_hz <= -lim;
+#endif
+#if USB_CDC_ENABLED
+diag_p_hz = effective_kp * err;
+diag_hf_hz = FB_HF_GAIN * hf_error;
+diag_limit_hz = lim;
+diag_output_saturation = feedback_diag_limit(adj_hz, lim);
+diag_integral_saturation = feedback_diag_limit(integ_next, integ_lim);
+#endif
 
 if (adj_hz > lim)
 {
@@ -1390,12 +1557,36 @@ else if (adj_hz < -lim)
 
 fb.integ_hz = integ_next;
 
+#if FB_EXPERIMENTAL_OFFSET_SEED
+if (st == USB_AUDIO_STREAMING && !tud_suspended())
+{
+    const uint64_t offset_now = time_us_64();
+    feedback_offset_result_t result;
+    if (feedback_offset_sample(&feedback_offset, offset_now, fs, fb.level_f, adj_hz,
+        offset_output_saturated, dynamic_limit_ppm > FB_BASE_LIMIT_PPM, &result))
+        cdc_diagnostics_offset_update(offset_now, fs, &result);
+}
+#endif
 }
 
 #endif
 
 const float rate_hz = i2s_actual_sample_rate() + adj_hz;
 stats.feedback_hz = rate_hz;
+
+#if USB_CDC_ENABLED
+fb_diagnostics = (feedback_diagnostics_t){
+    .update_us = now, .sample_rate = fs, .p_hz = diag_p_hz, .hf_hz = diag_hf_hz,
+    .adjustment_hz = adj_hz, .limit_hz = diag_limit_hz,
+    .output_saturation = diag_output_saturation, .integral_saturation = diag_integral_saturation,
+#if FIXED_FEEDBACK_TEST
+    .mode = FEEDBACK_DIAG_FIXED
+#else
+    .mode = st == USB_AUDIO_BUFFERING ? FEEDBACK_DIAG_BUFFERING : FEEDBACK_DIAG_PI
+#endif
+};
+fb_diagnostics_valid = true;
+#endif
 
 // 16.16 samples per 1 ms frame
 const uint32_t value = (uint32_t)((double)rate_hz * 65.536 + 0.5);
@@ -1523,6 +1714,15 @@ void usb_audio_task(void)
     loop0_prev_us = diagnostics_enabled ? loop_now_us : 0;
 
     tud_task();
+#if FB_EXPERIMENTAL_OFFSET_SEED
+    if (__atomic_exchange_n(&offset_usb_reset_pending, 0u, __ATOMIC_ACQ_REL))
+    {
+        feedback_offset_invalidate(&feedback_offset, time_us_64());
+        fb.integ_hz = 0.0f;
+    }
+    if (__atomic_exchange_n(&offset_usb_suspend_pending, 0u, __ATOMIC_ACQ_REL))
+        feedback_offset_clear_window(&feedback_offset, time_us_64());
+#endif
     service_rx_packet_gap();
 
 #if USB_BRINGUP_LEVEL == 1
@@ -1569,6 +1769,45 @@ float usb_audio_get_feedback_integrator_hz(void)
 {
 	return fb.integ_hz;
 }
+
+#if USB_CDC_ENABLED
+feedback_diag_config_t usb_audio_get_feedback_config(void)
+{
+#if FB_EXPERIMENTAL_RATE_GAINS
+	const uint32_t reference_rate = audio_state.freq;
+	const float kp = feedback_rate_kp(reference_rate);
+	const float ki = feedback_rate_ki(kp);
+#else
+	const float kp = FB_KP;
+	const float ki = FB_KI;
+#endif
+	return (feedback_diag_config_t){
+		.target_frames = FB_TARGET_LEVEL,
+		.kp_microhz_per_frame = (uint32_t)(kp * 1000000.0f + 0.5f),
+		.ki_microhz_per_frame_s = (uint32_t)(ki * 1000000.0f + 0.5f),
+		.gain_start_permille = (uint32_t)(FB_TRANSIENT_GAIN_START * 1000.0f),
+		.gain_ramp_us = FB_TRANSIENT_DURATION_US,
+		.boost_start_frames = (uint32_t)FB_BOOST_START_ERR,
+		.boost_full_frames = (uint32_t)FB_BOOST_FULL_ERR,
+		.base_limit_ppm = (uint32_t)FB_BASE_LIMIT_PPM,
+		.boost_limit_ppm = (uint32_t)FB_BOOST_MAX_PPM,
+		.fixed_test = FIXED_FEEDBACK_TEST != 0,
+#if FB_EXPERIMENTAL_RATE_GAINS
+		.gain_reference_hz = reference_rate,
+		.kp_nppm_per_frame = (uint32_t)(FEEDBACK_RATE_KP_PPM_PER_FRAME * 1000.0f + 0.5f),
+		.rate_scaled = true
+#endif
+	};
+}
+
+bool usb_audio_get_feedback_diagnostics(feedback_diagnostics_t *snapshot)
+{
+	if (snapshot == NULL || !fb_diagnostics_valid)
+		return false;
+	*snapshot = fb_diagnostics;
+	return true;
+}
+#endif
 
 bool usb_audio_get_out_age_us(uint32_t *age_us)
 {

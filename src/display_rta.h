@@ -24,6 +24,15 @@ typedef enum
 	DISPLAY_PAGE_COUNT
 } display_page_t;
 
+static inline display_page_t display_rta_next_page(display_page_t page)
+{
+#if USB_CDC_ENABLED
+	if (page == DISPLAY_PAGE_BOOT)
+		return DISPLAY_PAGE_DIAGNOSTICS;
+#endif
+	return (display_page_t)((page + 1) % DISPLAY_PAGE_COUNT);
+}
+
 typedef enum
 {
 	DISPLAY_BUTTON_ACTION_NONE = 0,

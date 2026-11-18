@@ -1212,8 +1212,6 @@ static bool audiod_set_interface(uint8_t rhport, tusb_control_request_t const *p
           if (is_feedback_ep) {
             audio->ep_fb = ep_addr;
             audio->feedback.frame_shift = desc_ep->bInterval - 1;
-            // Schedule first feedback transmit
-            audiod_fb_send(func_id, false);
           }
   #else
           (void) is_feedback_ep;
@@ -1235,6 +1233,9 @@ static bool audiod_set_interface(uint8_t rhport, tusb_control_request_t const *p
 #if CFG_TUD_AUDIO_ENABLE_FEEDBACK_EP
       // Prepare feedback computation parameters
       TU_VERIFY(audiod_fb_params_prepare(func_id, alt));
+      if (_audiod_fct[func_id].ep_fb != 0) {
+        TU_VERIFY(audiod_fb_send(func_id, false));
+      }
 #endif// CFG_TUD_AUDIO_ENABLE_FEEDBACK_EP
 
       // We are done - abort loop
@@ -1538,6 +1539,8 @@ static bool audiod_fb_params_prepare(uint8_t func_id, uint8_t alt) {
     uint32_t const frame_div = (TUSB_SPEED_FULL == tud_speed_get()) ? 1000 : 8000;
     audio->feedback.min_value = ((fb_param.sample_freq - 1) / frame_div) << 16;
     audio->feedback.max_value = (fb_param.sample_freq / frame_div + 1) << 16;
+    // Prime the feedback value before the first transfer is copied into the DCD buffer.
+    audio->feedback.value = (uint32_t) (((uint64_t) fb_param.sample_freq << 16) / frame_div);
 
     switch (fb_param.method) {
       case AUDIO_FEEDBACK_METHOD_FREQUENCY_FIXED:

@@ -12,6 +12,7 @@
 #include <math.h>
 #include <string.h>
 
+#if !USB_CDC_ENABLED
 #define FFT_BINS (FFT_LEN / 2 + 1)
 #define LOW_FFT_LEN 8192
 #define LOW_BAND_COUNT 3
@@ -411,3 +412,9 @@ return (uint32_t)(
     sizeof(discard_next_frame) + sizeof(processing_index) + sizeof(processing_rate) +
     sizeof(active_rate_index));
 }
+#else
+uint32_t spectrum_static_ram_bytes(void)
+{
+return 0;
+}
+#endif
