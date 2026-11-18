@@ -24,9 +24,39 @@ CDC出力を有効にしてPCで本機の仮想COMポートを開くと、CDC接
 
 `FB_EXPERIMENTAL_RATE_GAINS`では、Kpは公称レートの0.47ppm／フレーム、Kiは基本Kpの2乗の1/4となります。レート変更に追従し、既存の64msローパス済み水位をそのまま使用します。起動時は両ゲインを同じ倍率でランプするため、その間は実効Kiが実効Kpの2乗の1/4とは限りません。`#FB_CONFIG`のKp・Kiは`GAIN_REFERENCE_HZ`における基本値をµHz単位に丸めたもので、実際の制御値は丸めません。`GAIN_MODE=RATE_SCALED`、`KP_NPPM_PER_FRAME=470`、`KI_FORMULA=KP_SQUARED_DIV4`から他のレートの基本値を求められます。低レートを含め、飽和・水位・整定には実機検証が必要です。
 
-`USB_AUDIO_ENABLE_OFFSET_SEED`では、STREAMING開始後5秒を除き、連続30秒の制限後補正平均から、平滑化水位の前後15秒平均の差を使った傾きをppm換算して引き、次のストリームのI項初期値を推定します。最初の有効値はそのまま保存し、以後は保存値70%・新値30%で更新します。保存値から15ppm以上離れた値は、連続2窓が互いに5ppm以内の場合だけ採用します。±80ppmを超える推定値は保存値も無効にします。ブースト、窓内の50%超の出力飽和、ストリーム中断、レート切替、異常状態またはUSBサスペンドでは窓を破棄します。フィードバック更新の間隔が20msを超えた場合も窓を破棄し、5秒の待機から再開します。USBリセット・切断、ストリーム終了から60分以上の経過、電源断では保存値も無効になります。保存はRAM内のみです。レート切替では保存したppmを新レートのHzに換算します。推定精度と整定改善はホストのフィードバック追従や実機条件に依存し、保証されません。
+主な制御パラメーターは次のとおりです。
 
-`OFFSET_SEED,UPTIME_US,RATE,VALID,SAVED_PPM,STOP_AGE_MS`はSTREAMING開始時の保存値・有効性と前回停止からの経過時間（停止履歴がなければ空欄）です。`OFFSET_UPDATE,UPTIME_US,RATE,ESTIMATE_PPM,CORRECTION_PPM,SLOPE_FRAMES_S,SATURATION_PCT,REASON,SAVED_VALID,SAVED_PPM`は窓の結果です。`REASON`は`INITIAL`、`SMOOTHED`、`BOOST`、`SATURATION`、`RANGE`、`PENDING`、`GAP`です。`GAP`では未完成窓の推定値などは空欄です。イベント欠落は`OFFSET_DROPPED,COUNT`で通知し、未接続時のイベントは保存しません。
+| 項目 | 値・意味 |
+|---|---|
+| Kp | 公称サンプルレートあたり0.47ppm／フレーム。44.1kHzでは20,727µHz／フレーム |
+| Ki | 基本Kp²／4 |
+| 基本補正上限 | 100ppm |
+| ブースト | 水位が目標より128フレームを超えて低下すると上限を拡大し、512フレーム以上の低下で最大1000ppm |
+| オフセット推定窓 | STREAMING開始後5秒を除外し、その後30秒ごとに推定。最初の推定結果は開始から約35秒後 |
+| 保存可能な推定値 | ±80ppm以内。範囲外の推定値では保存値も無効化 |
+| 保存値の失効 | ストリーム終了から60分以上経過した後、次回STREAMING開始時に失効判定 |
+| OFFSET_SEEDの無効化 | USBリセット／切断時に無効化する実装ですが、Picoを再起動しないUSBバスリセット単独での確認は未実施です。60分失効も実機未確認です |
+| OFFSET_SEEDのみを無効化 | CMake構成時に`-DUSB_AUDIO_ENABLE_OFFSET_SEED=OFF`を指定 |
+
+`USB_AUDIO_ENABLE_OFFSET_SEED`では、上記の各30秒窓について、制限後補正の平均から平滑化水位の前後15秒平均の差で求めた傾きをppm換算して引き、次のストリームのI項初期値を推定します。最初の有効値はそのまま保存し、以後は保存値70%・新値30%で更新します。保存値から15ppm以上離れた推定値は、連続する2窓の値が5ppm以内に一致した場合に採用します。ブースト、窓内の50%超の出力飽和、ストリーム中断、レート切替、異常状態またはUSBサスペンドでは窓を破棄します。フィードバック更新の間隔が20msを超えた場合も窓を破棄し、5秒の待機から再開します。保存はRAM内のみで、電源断・再起動で失われます。レート切替では保存したppmを新レートのHzに換算します。推定精度と整定改善はホストのフィードバック追従や実機条件に依存し、保証されません。
+
+| 行・列 | 意味 |
+|---|---|
+| `OFFSET_SEED,UPTIME_US,RATE,VALID,SAVED_PPM,STOP_AGE_MS` | STREAMING開始時の保存値を記録します。`UPTIME_US`は起動後µs、`RATE`はサンプルレート（Hz）、`VALID`は保存値の有効性（1／0）、`SAVED_PPM`は保存された補正値です。`STOP_AGE_MS`は直前のストリーム停止からの経過時間（ms）で、停止履歴がなければ空欄です。`VALID=0`の場合、`SAVED_PPM`は制御に使われません。 |
+| `OFFSET_UPDATE,UPTIME_US,RATE,ESTIMATE_PPM,CORRECTION_PPM,SLOPE_FRAMES_S,SATURATION_PCT,REASON,SAVED_VALID,SAVED_PPM` | 推定窓の結果です。`ESTIMATE_PPM`は推定値、`CORRECTION_PPM`は窓内の平均補正量、`SLOPE_FRAMES_S`は水位傾き、`SATURATION_PCT`は出力飽和時間の割合です。`SAVED_VALID`と`SAVED_PPM`は更新後の保存状態です。 |
+| `OFFSET_DROPPED,COUNT` | CDC出力待ちキューから欠落したOFFSETイベント数です。CDC未接続中のイベントは保持されません。 |
+
+`REASON`は次の推定結果・窓の状態を示します。
+
+| 値 | 意味 |
+|---|---|
+| `INITIAL` | 有効な保存値がなく、最初の推定値を保存 |
+| `SMOOTHED` | 推定値を保存値70%・新値30%で平滑化 |
+| `BOOST` | 窓内でブーストが発生したため不採用 |
+| `SATURATION` | 窓の50%を超えて出力が飽和したため不採用 |
+| `RANGE` | 推定値が±80ppmを超え、保存値を無効化 |
+| `PENDING` | 保存値から15ppm以上離れたため、次の窓での確認待ち |
+| `GAP` | フィードバック更新間隔が20msを超えたなどの理由で窓を破棄。推定関連列は空欄 |
 
 ### 高頻度記録と時刻同期
 
@@ -64,7 +94,7 @@ UTCはPCが送信直前に取得した値を装置のコマンド処理時刻に
 
 高頻度出力はCPU・USB帯域・PCの書き込み負荷を増やし、再生に影響したりログが欠落したりする可能性があります。`MISSED`、`DROPPED`、既存の欠落通知とループ時間を確認し、CDC無効時とも比較してください。この方法でスピンロック保持時間は直接測定できません。
 
-通常行は100ms間隔で、`MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS`の順です。`USB_MODE`はビルド構成に応じた`UAC1`または`UAC2`です。`HOST_RATE`は受信フレーム数から求める250ms窓の推定値です。`HF_DIFF_NOW`は両レートが有効な場合の符号付き`HOST_RATE - FEEDBACK_RATE`で、どちらかが0（未計測または無効）の場合は空欄です。`MAX_HF_DIFF_SESSION`はCDCログセッション中の最大絶対差、`MAX_HF_DIFF_STREAM`は現在のSTREAMING期間中の最大絶対差です。後者はSTREAMING開始後1秒間に重なる推定窓を除外し、有効な測定値が得られるまでは0です。`RING_MIN`/`RING_MAX`は各ログ間隔で観測した最小・最大水位、`RING_AVG`は約1ms間隔でサンプリングした平均水位です。状態遷移は`STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE`、異常は`ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`形式で記録し、遷移・異常時の状態と水位も残します。状態遷移イベントは状態を更新したCore0で記録するため、周期サンプルより高い時間分解能で遷移時刻を比較できます。通常行には日時を付加せず、時刻同期情報から対応付けます。CDC接続中は、診断画面を開いていなくても周期的な診断統計を収集します。
+通常行は100ms間隔で、`MS,FREQ,BIT_DEPTH,USB_MODE,HOST_RATE,FEEDBACK_RATE,HF_DIFF_NOW,RING_NOW,RING_MIN,RING_AVG,RING_MAX,MAX_HF_DIFF_SESSION,MAX_HF_DIFF_STREAM,STATE,UNDERFLOW_COUNT,USB_GAP_MAX_US,USBBUF_CAPACITY,USBBUF_FREE_NOW,USBBUF_FREE_MIN_STREAM,USBBUF_FREE_MAX_STREAM,USBBUF_FREE_MIN_PCT_STREAM,LCD_MAX_US,LCD_AVG_US,LCD_COUNT,FFT_MAX_US,FFT_AVG_US,FFT_COUNT,RATE_CHANGE_COUNT,STREAM_START_COUNT,STREAM_STOP_COUNT,LOOP0_LT1MS,LOOP0_LT2MS,LOOP0_LT5MS,LOOP0_GE5MS,LOOP1_LT1MS,LOOP1_LT2MS,LOOP1_LT5MS,LOOP1_GE5MS`の順です。`MS`はCDCログセッション開始からの経過ミリ秒で、起動後時間ではありません。`ANOMALY`行の`MS`も同じ時間軸です。`USB_MODE`はビルド構成に応じた`UAC1`または`UAC2`です。`HOST_RATE`は受信フレーム数から求める250ms窓の推定値です。`HF_DIFF_NOW`は両レートが有効な場合の符号付き`HOST_RATE - FEEDBACK_RATE`で、どちらかが0（未計測または無効）の場合は空欄です。`MAX_HF_DIFF_SESSION`はCDCログセッション中の最大絶対差、`MAX_HF_DIFF_STREAM`は現在のSTREAMING期間中の最大絶対差です。後者はSTREAMING開始後1秒間に重なる推定窓を除外し、有効な測定値が得られるまでは0です。`RING_MIN`/`RING_MAX`は各ログ間隔で観測した最小・最大水位、`RING_AVG`は約1ms間隔でサンプリングした平均水位です。状態遷移は`STATE,MS,FROM,TO,RATE,RING,DMA_POOL,USB_MODE`、異常は`ANOMALY,MS,CODE,DETAIL,USB_MODE,STATE,RATE,RING,DMA_POOL`形式で記録し、遷移・異常時の状態と水位も残します。状態遷移イベントは状態を更新したCore0で記録するため、周期サンプルより高い時間分解能で遷移時刻を比較できます。通常行には日時を付加せず、時刻同期情報から対応付けます。CDC接続中は、診断画面を開いていなくても周期的な診断統計を収集します。
 
 通常行の末尾にはさらに`FB_LEVEL,FB_INTEG_HZ,USB_OUT_AGE_US,USB_RESET_COUNT,USB_SUSPEND_COUNT,USB_RESUME_COUNT,DTR_ASSERT_COUNT,DTR_DEASSERT_COUNT`が続きます。最初の3列はフィードバック用の平滑化リング水位、積分値（Hz）、最後のUSB OUT受信コールからの経過時間（µs）です。受信時刻が未取得、またはSTREAMING以外では経過時間は空欄です。`USB_GAP_MAX_US`は過去の最大受信間隔であり、進行中の受信停止の長さではありません。CSV解析ツールはヘッダーに合わせてください。
 
@@ -74,7 +104,7 @@ UNDERFLOW検出時には、状態変更前の値を`UNDERFLOW,MS,RING,DMA_POOL,R
 
 USBイベントは`USB_EVENT,UPTIME_US32,GENERATION,OVERWRITTEN_BEFORE,EVENT`として出力します。COM接続時は保持中の直近256件を古い順に再送し、その後のイベントも出力します。容量を超えた場合は古いイベントから上書きされます。`UPTIME_US32`は起動後µsの下位32ビットで約71.6分ごとに周回し、`GENERATION`は診断リセットで変化します。`OVERWRITTEN_BEFORE`は今回の行より前に未送信のまま上書きされた件数です。CDC切断時の送信FIFO内の未送信データは失われます。USBイベントは全パケットの記録ではありません。
 
-`P0000+`はCDC接続判定が偽になったことを示し、DTR解除だけでなくUSB未構成やサスペンドでも発生します。新しい`L`イベントは明示的なライン状態要求のDTR・RTS、`Q`はサスペンド、`V`は復帰を示します。バスリセット完了は`B02000+`です。イベントがないことだけではUSB通信が継続していたとは判断できません。
+`P0000+`はCDC接続判定が偽になったことを示すイベントで、DTR解除専用ではありません。USB未構成やサスペンドでも発生します。DTR・RTSの明示的なライン状態要求は新しい`L`イベントで確認できます。`Q`はサスペンド、`V`は復帰、`B02000+`はバスリセット完了です。イベントがないことだけではUSB通信が継続していたとは判断できません。
 
 `USBBUF_CAPACITY`と`USBBUF_FREE_*`は名前にかかわらず音声リングバッファーの容量と空きであり、TinyUSBの受信FIFO容量・空きではありません。
 
@@ -101,3 +131,9 @@ CDC有効ビルド（`USB_BRINGUP_LEVEL=3`）で取得したログを確認し�
 - UAC2の別試験では、COM接続前の141件を初期イベント`J0000 +`から保持し、`OVERWRITTEN_BEFORE=0`で出力しました。別の上限超過試験では256件が出力され、244件の上書きが報告されました。
 
 これらのログではUNDERFLOWが発生していないため、UNDERFLOW詳細行の実機出力は未検証です。UAC1での64件超のイベント保持、およびAndroidでのCDC同時取得・長時間試験も未確認です。ログに異常が記録されないことは、プツ音がないことや長時間の安定性を保証しません。
+
+##### 長時間再生記録（CDC診断ビルド）
+
+これまでに約22分、37分、42分などの長時間再生ログを取得しました。記録には44.1kHzから192kHz、16／24／32-bitを含む複数のフォーマットが含まれます。接触不良による2回の切断を除き、記録された`UNDERFLOW_COUNT`、`MISSED`、`DROPPED`はいずれも0でした。
+
+これらはCDC診断ビルドでの記録です。CDC診断ビルドではFFT計算・表示が停止するため、通常ビルド（FFT有効）の長時間再生を確認した結果ではありません。また、カウンターが0であることは、聞こえるノイズがないことや、他のホスト・再生条件での安定性を保証しません。
