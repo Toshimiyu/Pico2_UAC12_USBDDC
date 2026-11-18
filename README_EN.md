@@ -36,10 +36,10 @@ Display features such as the 11-band FFT analyzer, real-time level meters, and b
 ## Supported Environments
 
 - Windows 11 (tested on 26H2 with UAC2; with WASAPI, match the source and Windows sample rates)
-- Android 16 (Sony XQ-ES44, UAC1 using the Onkyo HF Player v2.15.2 USB driver)
+- Android (UAC1; Onkyo HF Player playback through the Android standard driver and operation with HF Player's USB driver have been verified on hardware)
 - Build environment: Raspberry Pi Pico SDK v2.3.1 and Toolchain 15_2_Rel1
 
-Android requires HF Player's USB driver rather than the standard audio driver. See [Supported Operating Systems](#supported-operating-systems) for details.
+Use UAC1 mode on Android. Noise during playback through the standard driver is under investigation. UAC2 mode is intended for Windows. See [Supported Operating Systems](#supported-operating-systems) for details.
 
 ---
 
@@ -70,7 +70,7 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 ### V2.2
 
 - Set the feedback target to 50% of ring capacity (2048 frames) and enable level initialization, conditional integration, rate-scaled gains, and clock-offset seed reuse by default. Seed invalidation after USB re-enumeration remains unverified.
-- Change the UAC1/UAC2 Output Terminal from `0x0602` (Digital Audio Interface) to `0x0301` (Speaker). Recognition by Android's standard driver after this change has not been verified.
+- Change the UAC1/UAC2 Output Terminal from `0x0602` (Digital Audio Interface) to `0x0301` (Speaker). In UAC1 mode, recognition and playback with Onkyo HF Player through Android's standard driver, as well as operation with HF Player's USB driver, have been verified on hardware. Noise during playback through the standard driver is under investigation.
 - Add OFFSET_SEED/UPDATE, USB event counters, PCM traces, and other CDC diagnostics. CDC diagnostic builds disable FFT calculation and display to prioritize diagnostics and log capture.
 
 ### V2.1
@@ -264,13 +264,13 @@ In normal builds, use X to cycle through Boot, Playback, and Diagnostics. CDC-en
 ## Supported Operating Systems
 
 - Windows 11 (verified on Windows 11 26H2. When playing in WASAPI mode with Foobar2000, match the source sample rate to the Windows 11 sample rate before playback. With ASIO4ALL or other ASIO drivers, playback works normally even if the sample rates differ. Verified with ASIO4ALL 2.22.)
-- Android 16 (verified on a Sony XQ-ES44 smartphone with the paid Onkyo HF Player v2.15.2 USB driver and UAC1)
+- Android (UAC1; Onkyo HF Player playback through the Android standard driver and operation with HF Player's USB driver have been verified on hardware)
 
 ### Current Specification Notes
 
-- The current firmware uses Output Terminal `0x0301` (Generic Speaker / Speaker Output) for both UAC1 and UAC2. Recognition by Android's standard driver after this change has not been verified.
-- On Android, use the UAC1 build and Onkyo HF Player with its USB driver. HF Player's proprietary driver does not support UAC2, so the UAC2 build is intended for Windows.
-- Why HF Player's proprietary driver works with this configuration is unconfirmed. Future app or driver updates may change its behavior.
+- The current firmware uses Output Terminal `0x0301` (Generic Speaker / Speaker Output) for both UAC1 and UAC2. In UAC1 mode, recognition by Android's standard driver and playback with Onkyo HF Player have been verified on hardware. Noise during playback through the standard driver is under investigation.
+- UAC1 operation with Onkyo HF Player's USB driver has also been verified on hardware. Use UAC1 on Android. HF Player's USB driver does not support UAC2, so UAC2 is intended for Windows.
+- Future app or driver updates may change behavior.
 - `bcdDevice` is `0x0303` for UAC1 and `0x0313` for UAC2. These values were updated to distinguish the descriptors from earlier versions, but Windows may retain old device information.
 
 Note: With the Android 16 (Sony XQ-ES44) device connected, a USB tester measured 4.972 V and 0.140 A (approximately 0.696 W).
@@ -283,8 +283,8 @@ Windows may retain old device information after an earlier firmware version has 
 2. Open **Device Manager** in Windows.
 3. Select **View → Show hidden devices**.
 4. Find this device under **Sound, video and game controllers** or another relevant category, right-click it, and select **Uninstall device**.
-5. If an option to delete the driver software is shown, leave it **unchecked** and uninstall the device.
-6. Reconnect the device and wait for Windows to recognize it again.
+5. If an option to delete the driver software is shown, leave it **unchecked**, uninstall the device, and restart the PC.
+6. After the PC restarts, reconnect the device and wait for Windows to recognize it again.
 
 Confirm the device name before removal to avoid uninstalling another audio device. This procedure attempts to recreate the device registration; it may not resolve every recognition problem.
 
@@ -343,7 +343,7 @@ Current Full-Speed limitations:
 
 Note: 24bit/32bit 176.4kHz and 192kHz exceed the Full-Speed USB packet-size limit and are therefore not supported.
 
-Note: Onkyo HF Player has been verified in UAC1 mode.
+Note: In UAC1 mode, Onkyo HF Player playback through Android's standard driver and operation with HF Player's USB driver have been verified on hardware. Noise during playback through the standard driver is under investigation.
 
 ---
 

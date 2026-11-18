@@ -36,10 +36,10 @@ USB受信データはリングバッファーへ格納する前に、PCMサン�
 ## 対応環境
 
 - Windows 11（26H2で確認、UAC2。WASAPIではWindowsと音源のサンプルレートを合わせてください）
-- Android 16（Sony XQ-ES44、Onkyo HF Player v2.15.2のUSBドライバーを使用したUAC1）
+- Android（UAC1。Android標準ドライバー経由でのOnkyo HF Player再生と、HF Player USBドライバーでの動作を実機確認）
 - ビルド環境：Raspberry Pi Pico SDK v2.3.1、Toolchain 15_2_Rel1
 
-Androidは標準オーディオドライバーではなく、HF PlayerのUSBドライバーを使用します。詳しい条件は「対応OS」を参照してください。
+AndroidではUAC1モードを使用してください。標準ドライバー経由での再生時に発生するノイズは調査中です。UAC2モードはWindows向けです。詳しくは「対応OS」を参照してください。
 
 ## 設計目標
 
@@ -64,7 +64,7 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 ### V2.2
 
 - フィードバック目標をリング容量の50%（2048フレーム）に変更し、水位初期化、条件付き積分、レート比例ゲイン、ストリーム間のクロック差推定値の引き継ぎを既定で有効化。USB再列挙後のシード無効化は未確認です。
-- UAC1/UAC2のOutput Terminalを`0x0602`（Digital Audio Interface）から`0x0301`（Speaker）へ変更。変更後のAndroid標準ドライバーでの認識は未確認です。
+- UAC1/UAC2のOutput Terminalを`0x0602`（Digital Audio Interface）から`0x0301`（Speaker）へ変更。UAC1ではAndroid標準ドライバーでの認識とOnkyo HF Playerでの再生、およびHF Player USBドライバーでの動作を実機確認。標準ドライバーでの再生時のノイズは調査中です。
 - CDC診断ログにOFFSET_SEED/UPDATE、USBイベントカウンター、PCMトレースなどを追加。CDC診断ビルドではFFT計算・表示を停止し、診断画面とログ取得を優先します。
 
 ### V2.1
@@ -251,13 +251,13 @@ Pico 2 + Pico Audio Pack（PCM5100A）+ Pico Display Pack 2.0
 ## 対応OS
 
 - Windows 11（26H2で動作確認済み。Foobar2000でWASAPIモードで再生するときは、音源のサンプリングレートとWindows11のサンプリングレートを合わせてから再生を行ってください。ASIO4ALLやASIOドライバー等の場合は、サンプリングレートが異なっていても正常に再生されます。ASIO4ALL2.22で確認済み。）
-- Android 16（Sony XQ-ES44スマートフォン。有償版Onkyo HF Player v2.15.2のUSBドライバーとUAC1で動作確認）
+- Android（UAC1。Android標準ドライバー経由でのOnkyo HF Player再生と、HF Player USBドライバーでの動作を実機確認）
 
 ### 現行ファームウェアの仕様上の注意点
 
-- 現行ファームウェアはUAC1/UAC2ともOutput Terminal `0x0301`（Generic Speaker / Speaker Output）を使用します。この変更後のAndroid標準ドライバーでの認識は未確認です。
-- AndroidではUAC1ビルドとOnkyo HF Playerを使い、HF PlayerのUSBドライバーを使用してください。HF Playerの独自ドライバーはUAC2に対応していないため、UAC2ビルドはWindows向けです。
-- HF Playerの独自ドライバーが利用できる理由は未確認です。アプリやドライバーの更新によって、将来動作が変わる可能性があります。
+- 現行ファームウェアはUAC1/UAC2ともOutput Terminal `0x0301`（Generic Speaker / Speaker Output）を使用します。UAC1はAndroid標準ドライバーでの認識と、Onkyo HF Playerでの再生を実機確認済みです。標準ドライバーでの再生時に発生するノイズは調査中です。
+- Onkyo HF PlayerのUSBドライバーを使用したUAC1動作も実機確認済みです。AndroidではUAC1を使用してください。HF PlayerのUSBドライバーはUAC2に対応していないため、UAC2はWindows向けです。
+- アプリやドライバーの更新によって、将来動作が変わる可能性があります。
 - `bcdDevice`はUAC1が`0x0303`、UAC2が`0x0313`です。従来の記述子との識別を目的として更新していますが、Windowsに古いデバイス情報が残る場合があります。
 
 ※ Android 16（Sony XQ-ES44）接続時のUSBテスター実測値は、4.972 V・0.140 A（約0.696 W）です。
@@ -270,8 +270,8 @@ Pico 2 + Pico Audio Pack（PCM5100A）+ Pico Display Pack 2.0
 2. Windowsの**デバイス マネージャー**を開きます。
 3. **表示 → 非表示のデバイスの表示**を選択します。
 4. 「サウンド、ビデオ、およびゲーム コントローラー」などから本機を探し、右クリックして**デバイスのアンインストール**を選びます。
-5. ドライバーソフトウェアを削除する項目が表示された場合は、**チェックを入れずに**アンインストールします。
-6. 本機を再接続し、Windowsによる再認識を待ちます。
+5. ドライバーソフトウェアを削除する項目が表示された場合は、**チェックを入れずに**アンインストールし、PCを再起動してください。
+6. PCを再起動後、本機を再接続し、Windowsによる再認識を待ちます。
 
 ※削除前にデバイス名を確認し、ほかのオーディオ機器を削除しないようにしてください。この手順はデバイス登録の再作成を試すもので、すべての認識問題が解消するとは限りません。
 
@@ -322,7 +322,7 @@ Full-Speed USBでの現在の上限：
 
 ※24bit / 32bitの176.4kHzおよび192kHzはFull-Speed USBのパケットサイズ上限を超えるため、サポートしていません。
 
-※Onkyo HF PlayerはUAC1モードで動作確認しています。
+※UAC1モードでは、Android標準ドライバー経由でのOnkyo HF Player再生と、HF Player USBドライバーでの動作を実機確認しています。標準ドライバーでの再生時のノイズは調査中です。
 
 ## I²S出力仕様
 
