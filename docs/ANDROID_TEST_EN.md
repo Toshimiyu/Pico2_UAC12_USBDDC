@@ -24,4 +24,36 @@ Reducing the feedback limits tended to improve the symptoms, but the cause remai
 - The change in click frequency, occurrence of OVERFLOW / UNDERFLOW, and whether feedback correction remains at its limit after the current adjustments have not been confirmed.
 - BCLK, LRCK, DATA, and DAC analog output waveforms during a click have not been measured. The cause has not been isolated to the host, device, or DAC. Future options include recording the output, observing the signals simultaneously, and comparing another host.
 
+#### Status and Validation Plan as of November 19, 2026
+
+##### Observed facts
+
+- In a comparison using the same HF Player and audio source, clicks were observed with Android's standard driver but not with the HF Player USB Driver. The number of trials and quantitative click frequency were not recorded.
+- V2.2 seems to have substantially reduced clicks by listening, but no quantitative comparison has been made.
+- V2.2 includes multiple changes, including feedback-control changes, so the effect of each change has not been isolated. The absence of a clear UNDERFLOW or other diagnostic event alone does not establish that no clicks occurred.
+- The final V2.2 target is 2048 frames, 50% of the 4096-frame ring. The 2150-frame value was suggested by Claude for testing, not specified by the user as a design target. There is no evidence that changing from 2150 to 2048 improved the symptoms.
+- A reply to TinyUSB Discussion #4547 is pending.
+
+##### Hypotheses (unconfirmed)
+
+- Even when both host and device operate within the specification, the interaction between Feedback changes or response and buffer control may cause an interoperability issue with a particular host-device combination.
+- V2.2 control changes may have made tracking of momentary fluctuations more measured, possibly reducing the symptoms. However, there are no measurements yet to establish a relationship to PI control or explain the improvement.
+- Do not attribute the cause to either the host or device, or treat any explanation for the improvement as established.
+
+##### Measurements to evaluate interoperability
+
+Where possible, compare Android's standard driver and the HF Player USB Driver across repeated trials using the same device, connection, HF Player, audio source, sample rate, bit depth, volume, audio effects, and playback duration. Record the firmware version, build settings, driver, test conditions, and duration for each trial, and correlate click timestamps and counts with a recording.
+
+- **Audio symptoms:** Count and timestamp clicks; record the output waveform and, if possible, simultaneously observe the DAC analog output and BCLK / LRCK / DATA. The absence of a visible digital anomaly does not establish that there was no audible symptom.
+- **Buffer and anomalies:** `RING_NOW` / `RING_MIN` / `RING_AVG` / `RING_MAX`, UNDERFLOW, OVERFLOW, and whether and when DMA silence substitution occurred.
+- **Feedback control:** Compare `FEEDBACK_RATE`, `HOST_RATE`, `HF_DIFF_NOW`, and `FB_LEVEL` / `FB_INTEG_HZ`; where available, also compare `FB_CORR_PPM_X10`, `FB_LIMIT_PPM_X10`, `FB_OUT_SAT`, and `FB_I_SAT` for each trial. CDC logging may add diagnostic load, so also check whether symptoms differ with CDC enabled and disabled.
+- **USB receive timing:** Relate `USB_OUT_AGE_US` and `USB_GAP_MAX_US` and receive intervals to symptom timestamps. These values alone do not identify the host as the cause.
+
+##### Separate host-side and device-side options
+
+- **Host side:** Record the driver, application, audio effects, and requested format. If available, inspect USB traces or host logs for Feedback reception and application. Changes to Android's standard driver cannot be controlled by this device, so share observations with the relevant implementers.
+- **Device side:** Compare one factor at a time, including target level, PI control, Anti-Windup, rate-scaled gain, and reuse of the estimated clock difference between streams. Evaluate buffer level, correction variation and saturation, and dropouts as well as clicks; confirm that reducing clicks does not compromise underflow headroom.
+
+These are proposed validation steps, not evidence that either host or device violates the specification or that any particular mitigation will work.
+
 ---
