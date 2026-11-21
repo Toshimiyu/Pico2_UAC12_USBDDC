@@ -39,6 +39,12 @@ Display features such as the 11-band FFT analyzer, real-time level meters, and b
 - Android (UAC1; Onkyo HF Player playback through the Android standard driver and operation with HF Player's USB driver have been verified on hardware)
 - Build environment: Raspberry Pi Pico SDK v2.3.1 and Toolchain 15_2_Rel1
 
+Build with the repository's bundled TinyUSB (reported version 0.21.0). The Pico SDK 2.3.1 bundled version has incompatible USB event APIs and does not build. UAC2 Full-Speed feedback currently uses four bytes; host compatibility requires separate hardware testing.
+
+UAC2 `CLK_VALID` remains 1 during a rate change, while sample-rate GET_CUR reports the requested rate. Host compatibility of this combination has not been verified.
+
+The PID allocation for the current USB identifier `0x2e8a:0xfede` is unconfirmed. Before distribution, check [Raspberry Pi's PID allocation process](https://github.com/raspberrypi/usb-pid) and obtain the necessary allocation.
+
 Use UAC1 mode on Android. Noise during playback through the standard driver is under investigation. UAC2 mode is intended for Windows. See [Supported Operating Systems](#supported-operating-systems) for details.
 
 ---
@@ -66,6 +72,15 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 <details>
 <summary>Show version history</summary>
+
+### V2.3
+
+- Use dedicated system clocks of 330 MHz (`D330`) at 44.1/88.2 kHz and 307.2 MHz (`D307`) at 176.4 kHz to reduce average sample-rate error from PIO divider quantization (about 6.25 to 0.91 ppm at 44.1/88.2 kHz and 125 to 1.95 ppm at 176.4 kHz). The I²S output clock is shared across USB input bit depths. Jitter reduction has not yet been measured on hardware.
+- Measure host send rate independently of diagnostic display and CDC connection, so feedback measurement does not depend on diagnostic enablement.
+- Detect and recover from DMA AHB errors instead of treating them as normal completions, and stop PIO before changing clocks during rate switches. Hardware validation of recovery and switching remains necessary.
+- Stop startup if ring-buffer allocation fails, synchronize shared ring-state reads and clearing, and correct UAC1 feedback `bRefresh` and inverted I²S PIO configuration.
+- Add a Feedback Monitor screen. An optional diagnostic build records the first 1024 audio OUT completions in RAM for on-screen inspection while Android remains connected. See the [Android test procedure](docs/ANDROID_TEST_EN.md).
+- Update firmware labels to `v2.3` for normal builds and `v2.3T` for CDC diagnostic builds. USB `bcdDevice` remains `0x0303` for UAC1 and `0x0313` for UAC2.
 
 ### V2.2
 
@@ -259,7 +274,7 @@ Pico2 + Pico Audio Pack (PCM5100A) + Pico Display Pack 2.0
 
 ## Display and Diagnostics
 
-In normal builds, use X to cycle through Boot, Playback, and Diagnostics. CDC-enabled builds (`USB_BRINGUP_LEVEL=3`) disable the FFT display and processing, switch from Boot to Diagnostics after startup, and use X to cycle through Boot, Diagnostics, and Playback Start Log. On the Diagnostics screen, A/B navigate USB event history, A+B toggles audio-state history, and holding Y for 3 seconds resets diagnostic values and USB event history. For screen details, event symbols, and anomaly codes, see the [diagnostic event reference](docs/DIAGNOSTICS_EN.md).
+In normal builds, use X to cycle through Boot, Playback, Diagnostics, and Feedback Monitor. CDC-enabled builds (`USB_BRINGUP_LEVEL=3`) disable the FFT display and processing, switch from Boot to Diagnostics after startup, and use X to cycle through Boot, Diagnostics, Feedback Monitor, and Playback Start Log. On the Diagnostics screen, A/B navigate USB event history, A+B toggles audio-state history, and holding Y for 3 seconds resets diagnostic values and USB event history. For screen details, event symbols, and anomaly codes, see the [diagnostic event reference](docs/DIAGNOSTICS_EN.md).
 
 ## Supported Operating Systems
 
@@ -445,7 +460,7 @@ The display system provides a real-time FFT spectrum visualization and buffer-st
   - Buffer water-level display
 - Monitors audio inactivity in the main loop and cleans up the buffer after 500 ms
 - Clock switching control
-  - 44.1kHz family: 336MHz
+  - 44.1kHz family: 330MHz
   - 48kHz family: 360MHz
   - Rate changes with the same system clock skip voltage and system clock reconfiguration while updating the I²S divider
 - Software audio mute (output gain control)
@@ -600,6 +615,8 @@ cmake --build build
 ```
 
 To build in diagnostic logging mode, add `-DUSB_BRINGUP_LEVEL=3` when configuring CMake. If omitted, the default is normal operation (level 2), with the virtual COM port and diagnostic log output disabled.
+
+For experimental audio OUT packet capture, also add `-DUSB_PACKET_TRACE_ENABLE=ON` to a diagnostic build. It defaults to OFF, and capture is lost on power-off. See the [Android test procedure](docs/ANDROID_TEST_EN.md) for operation and limitations.
 
 After changing the setting, re-run CMake configuration and rebuild the project.
 

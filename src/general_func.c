@@ -16,16 +16,22 @@ static void renew_cpu_clock(void)
 	uint32_t target_khz;
 	switch (audio_state.freq)
 	{
+	case 176400:
+		target_khz = SYS_CLOCK_KHZ_176K4;
+		break;
+	case 88200:
+		target_khz = SYS_CLOCK_KHZ_44K1_88K2;
+		break;
 	case 192000:
 	case 96000:
 	case 48000:
 		target_khz = SYS_CLOCK_KHZ_48K;
 		break;
-	case 176400:
-	case 88200:
 	case 44100:
+		target_khz = SYS_CLOCK_KHZ_44K1_88K2;
+		break;
 	default:
-		target_khz = SYS_CLOCK_KHZ_44K;
+		target_khz = SYS_CLOCK_KHZ_44K1_88K2;
 		break;
 	}
 
@@ -40,11 +46,12 @@ static void renew_cpu_clock(void)
 
 void renew_clock(void)
 {
-	// Reconfigure the CPU clock.
-	renew_cpu_clock();
-
 	// Clear DMA.
 	dma_stop_and_clear();
+
+	// Stop PIO before changing its source clock.
+	stop_i2s();
+	renew_cpu_clock();
 
 	// Reconfigure the PIO clock divider.
 	reset_i2s_freq();

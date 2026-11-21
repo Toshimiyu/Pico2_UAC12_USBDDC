@@ -2,6 +2,42 @@
 
 [English](ANDROID_TEST_EN.md) | [日本語](ANDROID_TEST.md)
 
+## Experimental USB Packet Capture
+
+Configure a UAC1 diagnostic build with `USB_BRINGUP_LEVEL=3`, `USB_AUDIO_CLASS_VERSION=1`,
+and `USB_PACKET_TRACE_ENABLE=ON`. The option is OFF by default; normal builds do not
+include capture or its display page. It requires the repository's bundled TinyUSB.
+UAC2 diagnostic builds can use it as well.
+
+1. Keep Android connected and play the same source with the driver under test. From the
+   first audio OUT completion after power-on, up to 1024 transfers are stored in RAM.
+   The callback does not print.
+2. Press X to reach `USB PACKET TRACE`, and use A/B to move backward/forward 12 entries
+   at a time and photograph the screen. `INDEX` is zero-based receive order, `TIME_US`
+   is microseconds since the first completion was processed, `BYTES` is received length, `EP` is the
+   hexadecimal endpoint, and `ALT` is the alternate setting. `RATE` is the requested
+   rate at the first packet; the bit depth and bytes per sample correspond to that
+   packet's ALT descriptor. UAC1 ALT 1 is 16-bit / 2 bytes; ALT 2 is 24-bit / 3 bytes.
+3. `ARMED` means waiting, `RECORDING` means capturing, and `SAVED` means capture stopped.
+   Capture stops without overwriting at 1024 entries, or earlier on stream close or a
+   rate/ALT change. Reconnection or a different stream does not erase the capture.
+4. To retry, stop playback, hold Y for 3 seconds on the diagnostics page, then start
+   playback. This also resets existing diagnostic counters and events. Rearming during
+   playback starts with the next packet instead. Use the same procedure and photograph
+   the screen for each driver.
+
+The capture uses approximately 8 KB of volatile RAM and is lost when power is removed,
+so photograph it while Android remains connected. At one packet per millisecond, the
+first 1024 packets cover about one second and cannot capture later clicks. Timestamps
+are taken when TinyUSB processes the receive-completion callback, not when packets
+arrive on the USB bus, and include task scheduling delays. Only successful completions
+delivered to TinyUSB are recorded; packets not sent or transfers not reported are absent.
+Elapsed time is calculated
+modulo the approximately 71.6-minute 32-bit timer period. RAM capture and display
+rendering add load; their effect on playback requires hardware testing.
+
+In an Android playback trial on November 21, 2026, the screen showed 1024 captured entries at 48 kHz / 24-bit, EP `01`, ALT `2`, and no noise was heard during the trial. Displayed indexes 36–47 were 288 or 294 bytes. This single observation does not establish long-term stability or resolution of the previously observed noise.
+
 ## Historical Test Notes
 
 Similar clicks occurred in this project, and the feedback limits were previously changed to `FB_BASE_LIMIT_PPM=50` and `FB_BOOST_MAX_PPM=500`. The historical results below are from the derived [Pico2_UAC12_USBDDC_Weather](https://github.com/Toshimiyu/Pico2_UAC12_USBDDC_Weather) project, not measurements of this project with its current settings. The Foobar2000 for Android observation predates V2.1 and is not evidence of current support.

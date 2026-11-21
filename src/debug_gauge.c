@@ -25,6 +25,10 @@
 #include "transmit_to_dac.h"
 #include "usb_device_control.h"
 #include "usb_audio_config.h"
+#include "diagnostic_window.h"
+#if USB_PACKET_TRACE_ENABLE
+#include "usb_audio_class.h"
+#endif
 
 // ---- Layout (320x240) -------------------------------------------------------------------------------
 #define G_HOST_X 48
@@ -575,6 +579,9 @@ void debug_gauge_init(void)
 void debug_gauge_reset(void)
 {
 	usb_audio_reset_diagnostics();
+#if USB_PACKET_TRACE_ENABLE
+	usb_audio_packet_trace_arm();
+#endif
 	history_mode = false;
 	debug_gauge_init();
 	reset_status = 4;
@@ -817,10 +824,12 @@ static void refresh(float level, usb_audio_state_t st)
 
 	const uint32_t sys_clock_hz = clock_get_hz(clk_sys);
 	const char *clock_text = "D???";
-	if (sys_clock_hz == SYS_CLOCK_KHZ_44K * 1000u)
-		clock_text = "D336";
-	else if (sys_clock_hz == SYS_CLOCK_KHZ_48K * 1000u)
+	if (sys_clock_hz == SYS_CLOCK_KHZ_48K * 1000u)
 		clock_text = "D360";
+	else if (sys_clock_hz == SYS_CLOCK_KHZ_44K1_88K2 * 1000u)
+		clock_text = "D330";
+	else if (sys_clock_hz == SYS_CLOCK_KHZ_176K4 * 1000u)
+		clock_text = "D307";
 	for (int i = 0; i < 4; i++)
 	{
 		if (clock_text[i] != shown_clock[i] &&
@@ -998,6 +1007,95 @@ static bool audio_has_slack(void)
 	return !enable_output;
 }
 
+#define FEEDBACK_PAGE_ROWS 5
+#define FEEDBACK_PAGE_COLS 38
+static char feedback_shown[FEEDBACK_PAGE_ROWS][FEEDBACK_PAGE_COLS];
+static diagnostic_window_t feedback_window;
+static uint32_t feedback_last_update_us;
+
+void feedback_page_init(void)
+{
+	q_head = q_tail = q_count = 0;
+	memset(feedback_shown, ' ', sizeof(feedback_shown));
+	feedback_window = (diagnostic_window_t){0};
+	feedback_last_update_us = time_us_32() - G_UPDATE_US;
+	queue_text_at(8, 12, "FEEDBACK MONITOR", 16, C_LABEL);
+	q_rect(8, 22, 304, 1, C_FRAME);
+	queue_text_at(8, 224, "X:NEXT PAGE", 11, C_LABEL);
+}
+
+static void feedback_page_line(int row, const char *text)
+{
+	const size_t length = strlen(text);
+	for (int i = 0; i < FEEDBACK_PAGE_COLS; i++)
+	{
+		const char c = (size_t)i < length ? text[i] : ' ';
+		if (c != feedback_shown[row][i] &&
+			q_char(8 + 8 * i, 40 + 24 * row, c, C_LABEL))
+			feedback_shown[row][i] = c;
+	}
+}
+
+static void feedback_page_refresh(uint32_t level, usb_audio_state_t state)
+{
+	const usb_audio_stats_t *stats = usb_audio_get_stats();
+	char text[FEEDBACK_PAGE_COLS + 1];
+	snprintf(text, sizeof(text), "STATE %s", state_text(state));
+	feedback_page_line(0, text);
+	snprintf(text, sizeof(text), "BUF %lu  DEV %+ld",
+		(unsigned long)level, (long)((int32_t)level - (int32_t)FB_TARGET_LEVEL));
+	feedback_page_line(1, text);
+
+	if (state == USB_AUDIO_IDLE || state == USB_AUDIO_SWITCHING)
+		snprintf(text, sizeof(text), "FB ----  OFF ----");
+	else
+	{
+		const float offset = stats->feedback_hz - i2s_actual_sample_rate();
+		const int32_t tenths = (int32_t)(offset * 10.0f + (offset < 0.0f ? -0.5f : 0.5f));
+		const uint32_t magnitude = (uint32_t)(tenths < 0 ? -tenths : tenths);
+		snprintf(text, sizeof(text), "FB %lu Hz  OFF %c%lu.%lu Hz",
+			(unsigned long)usb_audio_get_feedback_hz(), tenths < 0 ? '-' : '+',
+			(unsigned long)(magnitude / 10u), (unsigned long)(magnitude % 10u));
+	}
+	feedback_page_line(2, text);
+
+	if (feedback_window.valid)
+		snprintf(text, sizeof(text), "1s %lu-%lu  PP %lu",
+			(unsigned long)feedback_window.last_min,
+			(unsigned long)feedback_window.last_max,
+			(unsigned long)(feedback_window.last_max - feedback_window.last_min));
+	else
+		snprintf(text, sizeof(text), "1s ----  PP ----");
+	feedback_page_line(3, text);
+	snprintf(text, sizeof(text), "UF %lu  OF %lu",
+		(unsigned long)stats->underflow_count, (unsigned long)stats->overflow_count);
+	feedback_page_line(4, text);
+}
+
+void feedback_page_service(void)
+{
+	const uint32_t now = time_us_32();
+	const uint32_t level = audio_ring_total_frames();
+	const usb_audio_state_t state = usb_audio_get_state();
+	diagnostic_window_sample(&feedback_window, state == USB_AUDIO_STREAMING, now, level);
+
+	if (q_count == 0 && (uint32_t)(now - feedback_last_update_us) >= G_UPDATE_US)
+	{
+		feedback_last_update_us = now;
+		feedback_page_refresh(level, state);
+	}
+	if (q_count == 0 || !audio_has_slack())
+		return;
+
+	const gauge_op_t op = queue[q_head];
+	q_head = (q_head + 1) % Q_SIZE;
+	q_count--;
+	if (op.is_char)
+		lcd_char(op.x, op.y, op.c, op.fg, op.bg);
+	else
+		lcd_rect(op.x, op.y, op.w, op.h, op.fg);
+}
+
 #if USB_CDC_ENABLED
 #define TRACE_DISPLAY_ROWS 12
 #define TRACE_DISPLAY_COLS 38
@@ -1130,6 +1228,118 @@ void startup_log_service(void)
 }
 #endif
 
+#if USB_PACKET_TRACE_ENABLE
+#define PACKET_DISPLAY_ROWS 12u
+static uint16_t packet_page_start;
+static uint32_t packet_last_update_us;
+static bool packet_refresh_pending;
+
+void packet_trace_page_init(void)
+{
+	q_head = q_tail = q_count = 0;
+	packet_page_start = 0;
+	packet_last_update_us = time_us_32();
+	packet_refresh_pending = true;
+	memset(trace_shown, ' ', sizeof(trace_shown));
+	gpio_init(DISPLAY_BUTTON_A_PIN);
+	gpio_set_dir(DISPLAY_BUTTON_A_PIN, GPIO_IN);
+	gpio_pull_up(DISPLAY_BUTTON_A_PIN);
+	gpio_init(DISPLAY_BUTTON_B_PIN);
+	gpio_set_dir(DISPLAY_BUTTON_B_PIN, GPIO_IN);
+	gpio_pull_up(DISPLAY_BUTTON_B_PIN);
+	const uint32_t now = time_us_32();
+	button_a.raw_high = gpio_get(DISPLAY_BUTTON_A_PIN);
+	button_a.stable_high = button_a.raw_high;
+	button_a.raw_changed_us = now;
+	button_b.raw_high = gpio_get(DISPLAY_BUTTON_B_PIN);
+	button_b.stable_high = button_b.raw_high;
+	button_b.raw_changed_us = now;
+	queue_text_at(8, 8, "USB PACKET TRACE", 16, C_LABEL);
+	queue_text_at(8, 58, "INDEX TIME_US BYTES EP ALT", 26, C_LABEL);
+	queue_text_at(8, 224, "A:PREV B:NEXT X:PAGE", 20, C_LABEL);
+}
+
+static void packet_trace_page_refresh(void)
+{
+	char text[TRACE_DISPLAY_COLS + 1];
+	uint16_t count;
+	bool frozen;
+	uint32_t rate;
+	usb_audio_packet_trace_summary(&count, &frozen, &rate);
+	snprintf(text, sizeof(text), "%s %u/%u",
+		frozen ? "SAVED" : (count ? "RECORDING" : "ARMED"),
+		(unsigned)count, (unsigned)USB_PACKET_TRACE_CAPACITY);
+	trace_queue_line(22, 0, text, C_GREEN);
+	usb_packet_trace_entry_t first;
+	usb_audio_format_t format;
+	uint32_t elapsed_us;
+	if (usb_audio_packet_trace_get(0, &first, &elapsed_us) &&
+		usb_audio_class_get_format(first.alt, &format))
+		snprintf(text, sizeof(text), "RATE %lu %uBIT %uB/SAMPLE",
+			(unsigned long)rate, (unsigned)format.bit_depth,
+			(unsigned)format.bytes_per_sample);
+	else
+		snprintf(text, sizeof(text), "RATE %lu FORMAT UNKNOWN", (unsigned long)rate);
+	trace_queue_line(34, 1, text, C_GREEN);
+	trace_queue_line(46, 2, "RESET: DIAGNOSTICS Y 3S", C_LABEL);
+	for (uint16_t row = 0; row < PACKET_DISPLAY_ROWS; row++)
+	{
+		const uint16_t index = packet_page_start + row;
+		usb_packet_trace_entry_t entry;
+		uint32_t elapsed_us;
+		if (!usb_audio_packet_trace_get(index, &entry, &elapsed_us))
+			text[0] = '\0';
+		else
+		{
+			const int length = snprintf(text, sizeof(text), "%04u %10lu %5u %02X %u",
+				(unsigned)index, (unsigned long)elapsed_us, (unsigned)entry.length,
+				(unsigned)entry.endpoint, (unsigned)entry.alt);
+			if (length < 0 || (size_t)length >= sizeof(text))
+				snprintf(text, sizeof(text), "TRACE FORMAT ERROR");
+		}
+		trace_queue_line((uint16_t)(70 + row * 12), row + 3, text, C_GREEN);
+	}
+}
+
+void packet_trace_page_service(void)
+{
+	const uint32_t now = time_us_32();
+	const bool a_pressed = display_button_pressed(&button_a, DISPLAY_BUTTON_A_PIN, now);
+	const bool b_pressed = display_button_pressed(&button_b, DISPLAY_BUTTON_B_PIN, now);
+	uint16_t count;
+	bool frozen;
+	uint32_t rate;
+	usb_audio_packet_trace_summary(&count, &frozen, &rate);
+	if (a_pressed && !b_pressed && packet_page_start != 0)
+	{
+		packet_page_start -= PACKET_DISPLAY_ROWS;
+		packet_refresh_pending = true;
+	}
+	else if (b_pressed && !a_pressed &&
+			 (uint32_t)packet_page_start + PACKET_DISPLAY_ROWS < count)
+	{
+		packet_page_start += PACKET_DISPLAY_ROWS;
+		packet_refresh_pending = true;
+	}
+	if (q_count == 0 &&
+		(packet_refresh_pending || (uint32_t)(now - packet_last_update_us) >= G_UPDATE_US))
+	{
+		packet_refresh_pending = false;
+		packet_last_update_us = now;
+		packet_trace_page_refresh();
+	}
+	if (q_count == 0 || !audio_has_slack())
+		return;
+	const gauge_op_t op = queue[q_head];
+	q_head = (q_head + 1) % Q_SIZE;
+	q_count--;
+	if (op.is_char)
+		lcd_char(op.x, op.y, op.c, op.fg, op.bg);
+	else
+		lcd_rect(op.x, op.y, op.w, op.h, op.fg);
+}
+#endif
+
 void debug_gauge_service(void)
 {
 	if (!inited)
@@ -1206,6 +1416,7 @@ uint32_t debug_gauge_buffer_bytes(void)
 		sizeof(fill_chunk) + sizeof(queue) + sizeof(shown_pct) + sizeof(shown_host) +
 		sizeof(shown_fb) + sizeof(shown_size) + sizeof(shown_pkt) + sizeof(shown_state) +
 		sizeof(shown_clock) +
+		sizeof(feedback_shown) + sizeof(feedback_window) +
 #if GAUGE_SHOW_MINMAX
 		sizeof(shown_current) +
 #endif

@@ -46,7 +46,8 @@
 #define UAC2_MAX_RATE_24BIT   96000
 #define UAC2_MAX_RATE_32BIT   96000
 
-// Explicit feedback EP payload : 4 bytes, 16.16 samples/ms (UAC2)
+// Current bundled TinyUSB sends the 16.16 samples/ms API value as four UAC2 bytes.
+// Full-Speed host compatibility requires separate verification.
 #define UAC2_FB_EP_SIZE   4
 
 #define USB_AUDIO_CLASS_SUBSLOT_MAX 4
@@ -60,7 +61,7 @@
 // Descriptor length
 // UAC2_FUNC_DESC_LEN_NUM is the same value as TUD_AUDIO20_SPEAKER_STEREO_FB_MULTIALT_DESC_LEN written as a
 // plain number (IAD 8, std AC 9, CS AC 9, clock 8, input 17, output 12, FU 18, AS alt0 9, 3 x 53 per alt).
-// usb_descriptors.c verifies at compile time that both agree with the real descriptor.
+// usb_audio_uac2.c verifies at compile time that both agree with the real descriptor.
 //--------------------------------------------------------------------+
 #define UAC2_FUNC_DESC_LEN_NUM (8 + 9 + 9 + (8 + 17 + 12 + 18) + 9 + 3 * (9 + 16 + 6 + 7 + 8 + 7))
 #define UAC2_AS_ALT_LEN (TUD_AUDIO20_DESC_STD_AS_LEN\

@@ -9,64 +9,97 @@
 
 extern int16_t initialize_ringbuffer(uint32_t size, bool no_spinlock, RINGBUFFER *ringbuffer)
 {
+    if (size == 0 || size > INT32_MAX)
+        return -1;
+#if SIZE_MAX <= UINT32_MAX
+    if (size > SIZE_MAX / sizeof(int32_t))
+        return -1;
+#endif
+
+    int32_t *buffer = malloc(sizeof(int32_t) * (size_t)size);
+    if (buffer == NULL)
+        return -1;
+
     ringbuffer->no_spinlock = no_spinlock;
     if (!no_spinlock)
         ringbuffer->spinlock = spin_lock_init(spin_lock_claim_unused(true));
+    else
+        ringbuffer->spinlock = NULL;
 
     ringbuffer->size_buffer = size;
     ringbuffer->write_point = 0;
     ringbuffer->read_point = 0;
     ringbuffer->size_using = 0;
-    ringbuffer->buffer = (int32_t *)malloc(sizeof(int32_t) * size);
+    ringbuffer->buffer = buffer;
     return 0;
 }
 
 extern void clear_ringbuffer(RINGBUFFER *ringbuffer)
 {
+    uint32_t owner = 0;
+    if (!ringbuffer->no_spinlock)
+        owner = spin_lock_blocking(ringbuffer->spinlock);
     ringbuffer->write_point = 0;
     ringbuffer->read_point = 0;
     ringbuffer->size_using = 0;
+    if (!ringbuffer->no_spinlock)
+        spin_unlock(ringbuffer->spinlock, owner);
 }
 
 extern bool __not_in_flash_func(ringbuffer_is_full)(RINGBUFFER *ringbuffer)
 {
-    if (ringbuffer->write_point - ringbuffer->read_point >= ringbuffer->size_buffer)
-        return true;
-    else
-        return false;
+    return get_size_using(ringbuffer) == ringbuffer->size_buffer;
 }
 
 extern int64_t __not_in_flash_func(get_size_using)(RINGBUFFER *ringbuffer)
 {
-    return ringbuffer->size_using;
+    uint32_t owner = 0;
+    if (!ringbuffer->no_spinlock)
+        owner = spin_lock_blocking(ringbuffer->spinlock);
+    const int32_t size = ringbuffer->size_using;
+    if (!ringbuffer->no_spinlock)
+        spin_unlock(ringbuffer->spinlock, owner);
+    return size;
 }
 
 extern int64_t __not_in_flash_func(get_size_remain)(RINGBUFFER *ringbuffer)
 {
-    return ringbuffer->size_buffer - ringbuffer->size_using;
+    return (int64_t)ringbuffer->size_buffer - get_size_using(ringbuffer);
 }
 
 extern uint32_t __not_in_flash_func(get_read_point)(RINGBUFFER *ringbuffer)
 {
-    return ringbuffer->read_point;
+    uint32_t owner = 0;
+    if (!ringbuffer->no_spinlock)
+        owner = spin_lock_blocking(ringbuffer->spinlock);
+    const uint32_t point = ringbuffer->read_point;
+    if (!ringbuffer->no_spinlock)
+        spin_unlock(ringbuffer->spinlock, owner);
+    return point;
 }
 
 extern uint32_t __not_in_flash_func(get_write_point)(RINGBUFFER *ringbuffer)
 {
-    return ringbuffer->write_point;
+    uint32_t owner = 0;
+    if (!ringbuffer->no_spinlock)
+        owner = spin_lock_blocking(ringbuffer->spinlock);
+    const uint32_t point = ringbuffer->write_point;
+    if (!ringbuffer->no_spinlock)
+        spin_unlock(ringbuffer->spinlock, owner);
+    return point;
 }
 
 extern int16_t __not_in_flash_func(ringbuf_write_spinlock)(int32_t input, RINGBUFFER *ringbuffer)
 {
-    volatile uint32_t owner; // for spinlock
+    const uint32_t owner = spin_lock_blocking(ringbuffer->spinlock);
 
     if (ringbuffer->size_using == ringbuffer->size_buffer)
     {
+        spin_unlock(ringbuffer->spinlock, owner);
         return -1; // buffer is full
     }
 
     *(ringbuffer->buffer + (ringbuffer->write_point)) = input;
-    owner = spin_lock_blocking(ringbuffer->spinlock);
     ringbuffer->write_point++;
     if (ringbuffer->write_point >= ringbuffer->size_buffer)
         ringbuffer->write_point = 0;
@@ -92,15 +125,15 @@ extern int16_t __not_in_flash_func(ringbuf_write_no_spinlock)(int32_t input, RIN
 
 extern int16_t __not_in_flash_func(ringbuf_read_spinlock)(int32_t *output, RINGBUFFER *ringbuffer)
 {
-    volatile uint32_t owner; // for spinlock
+    const uint32_t owner = spin_lock_blocking(ringbuffer->spinlock);
     if (ringbuffer->size_using == 0)
     {
+        spin_unlock(ringbuffer->spinlock, owner);
         return -1; // buffer is empty
     }
 
     *output = *(ringbuffer->buffer + (ringbuffer->read_point));
 
-    owner = spin_lock_blocking(ringbuffer->spinlock);
     ringbuffer->read_point++;
     if (ringbuffer->read_point >= ringbuffer->size_buffer)
         ringbuffer->read_point = 0;
@@ -127,14 +160,13 @@ extern int16_t __not_in_flash_func(ringbuf_read_no_spinlock)(int32_t *output, RI
 
 extern int64_t __not_in_flash_func(ringbuf_read_array_spinlock)(int32_t *output, uint32_t size, RINGBUFFER *ringbuffer)
 {
-    volatile uint32_t owner; // for spinlock
+    const uint32_t owner = spin_lock_blocking(ringbuffer->spinlock);
 
     if (ringbuffer->size_using == 0 || ringbuffer->size_using < size)
     {
+        spin_unlock(ringbuffer->spinlock, owner);
         return -1; // buffer is empty, or now buffer usage is not bigger than requested size
     }
-
-    owner = spin_lock_blocking(ringbuffer->spinlock);
 
     int32_t rx1_size = ((ringbuffer->read_point + size) > ringbuffer->size_buffer) ? ringbuffer->size_buffer - ringbuffer->read_point : size;
     int32_t rx2_size = size - rx1_size;
@@ -180,16 +212,20 @@ extern int64_t __not_in_flash_func(ringbuf_read_array_no_spinlock)(int32_t *outp
 
 extern int64_t __not_in_flash_func(ringbuf_write_array_spinlock)(int32_t *input, uint32_t size, RINGBUFFER *ringbuffer)
 {
-    volatile uint32_t owner; // for spinlock
-    volatile int64_t remain_size = ringbuffer->size_buffer - ringbuffer->size_using;
+    const uint32_t owner = spin_lock_blocking(ringbuffer->spinlock);
+    const int64_t remain_size = ringbuffer->size_buffer - ringbuffer->size_using;
 
     if (ringbuffer->size_using == ringbuffer->size_buffer || remain_size < size)
+    {
+        spin_unlock(ringbuffer->spinlock, owner);
         return -1; // buffer is full
+    }
 
     if (size <= 0)
+    {
+        spin_unlock(ringbuffer->spinlock, owner);
         return 0;
-
-    owner = spin_lock_blocking(ringbuffer->spinlock);
+    }
 
     int32_t tx1_size = ((ringbuffer->write_point + size) > ringbuffer->size_buffer) ? ringbuffer->size_buffer - ringbuffer->write_point : size;
     int32_t tx2_size = size - tx1_size;

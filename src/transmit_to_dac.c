@@ -17,9 +17,10 @@
 #include "i2s_pio_interface.h"
 #include "i2s_rate.h"
 #include "cdc_diagnostics.h"
-#if FB_EXPERIMENTAL_LEVEL_SEED
 #include <stdatomic.h>
-_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "Feedback seed requires lock-free atomic integers");
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic integers");
+_Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic booleans");
+#if FB_EXPERIMENTAL_LEVEL_SEED
 // A generation prevents an unfinished DMA fill from acknowledging a later stream.
 static atomic_uint feedback_seed_generation;
 static atomic_uint feedback_primed_generation;
@@ -57,7 +58,8 @@ _Static_assert(sizeof(dma_tx_buffers) <= DMA_TX_SRAM_BANK_BYTES,
 static int dma_ch;
 static volatile bool dma_running;
 static volatile bool dma_running_pcm;
-static bool dma_ahb_error_seen;
+static atomic_uint dma_ahb_fault;
+static atomic_bool dma_fault_quiescent;
 static const uint32_t dma_silence[DMA_SILENCE_FRAMES * 2u] = {0};
 DMA_TX_STRUCTURE dma_tx;
 
@@ -147,13 +149,21 @@ void set_period_pwm_us(float period_us);
 void pwm_i2s_streaming_rate_change(void);
 void __not_in_flash_func(pwm_wrap_handler)(void);
 
-static void __not_in_flash_func(dma_tx_check_ahb_errors)(void)
+static bool __not_in_flash_func(dma_tx_check_ahb_errors)(void)
 {
-    const bool error =
-        (dma_hw->ch[dma_ch].ctrl_trig & DMA_CH0_CTRL_TRIG_AHB_ERROR_BITS) != 0u;
-    if (error && !dma_ahb_error_seen)
-        usb_audio_log_anomaly(10, (uint8_t)dma_ch, "CHANNEL", (uint32_t)dma_ch);
-    dma_ahb_error_seen = error;
+    const uint32_t error = dma_hw->ch[dma_ch].ctrl_trig &
+        (DMA_CH0_CTRL_TRIG_READ_ERROR_BITS | DMA_CH0_CTRL_TRIG_WRITE_ERROR_BITS);
+    if (error != 0u)
+    {
+        dma_channel_set_irq0_enabled((uint)dma_ch, false);
+        atomic_store_explicit(&dma_ahb_fault, error, memory_order_release);
+    }
+    return error != 0u;
+}
+
+bool dma_tx_fault_pending(void)
+{
+    return atomic_load_explicit(&dma_fault_quiescent, memory_order_acquire);
 }
 
 static void __not_in_flash_func(dma_tx_check_pio_stall)(uint32_t now_us)
@@ -173,7 +183,7 @@ static void __not_in_flash_func(dma_tx_check_pio_stall)(uint32_t now_us)
 
 static void __not_in_flash_func(dma_tx_schedule)(void)
 {
-    if (dma_running)
+    if (dma_running || atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
         return;
 
     const uint32_t *buffer;
@@ -216,6 +226,8 @@ static void __not_in_flash_func(dma_tx_irq_handler)(void)
     if (!dma_channel_get_irq0_status((uint)dma_ch))
         return;
     dma_channel_acknowledge_irq0((uint)dma_ch);
+    if (dma_tx_check_ahb_errors())
+        return;
     if (!dma_running)
         return;
     if (dma_running_pcm && dma_tx.using != 0)
@@ -233,16 +245,21 @@ void reset_i2s_freq(void)
     I2S_freq_init(pio, sm, &sm_config, offset);
 }
 
+void stop_i2s(void)
+{
+    pio_sm_set_enabled(pio, sm, false);
+}
+
 void init_i2s_interface(void)
 {
     if(I2S_SLEWRATE_FAST_ENABLE)
     {
-        gpio_set_slew_rate(I2S_DATA_PIN, GPIO_SLEW_RATE_SLOW);
-        gpio_set_slew_rate(I2S_SIDESET_BASE, GPIO_SLEW_RATE_SLOW);
-        gpio_set_slew_rate(I2S_SIDESET_BASE + 1, GPIO_SLEW_RATE_SLOW);
+        gpio_set_slew_rate(I2S_DATA_PIN, GPIO_SLEW_RATE_FAST);
+        gpio_set_slew_rate(I2S_SIDESET_BASE, GPIO_SLEW_RATE_FAST);
+        gpio_set_slew_rate(I2S_SIDESET_BASE + 1, GPIO_SLEW_RATE_FAST);
     }
 
-    if(I2S_STRENGTH_REINFORCE_ENABLE)
+    if(I2S_DRIVE_STRENGTH_2MA_ENABLE)
     {
         gpio_set_drive_strength(I2S_DATA_PIN, GPIO_DRIVE_STRENGTH_2MA);
         gpio_set_drive_strength(I2S_SIDESET_BASE, GPIO_DRIVE_STRENGTH_2MA);
@@ -269,7 +286,8 @@ void init_i2s_interface(void)
     dma_tx_reset();
     dma_running = false;
     dma_running_pcm = false;
-    dma_ahb_error_seen = false;
+    atomic_store_explicit(&dma_ahb_fault, 0u, memory_order_relaxed);
+    atomic_store_explicit(&dma_fault_quiescent, false, memory_order_relaxed);
     dma_channel_configure((uint)dma_ch, &config,
                           &pio->txf[sm], dma_tx.data[0].tx_buf, 0, false);
     dma_hw->ints0 = 1u << dma_ch;
@@ -292,6 +310,12 @@ extern volatile absolute_time_t time_start_output;
 
 void __not_in_flash_func(dma_tx_start)(void)
 {
+    if (atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
+    {
+        // Core0 may reset the pool only after the interrupted fill has finished.
+        atomic_store_explicit(&dma_fault_quiescent, true, memory_order_release);
+        return;
+    }
     // Loop-interval diagnostics: gap between two calls (this loop also runs the FFT)
     const uint32_t loop_now_us = time_us_32();
     static uint32_t anomaly_loop_prev_us;
@@ -326,7 +350,8 @@ void __not_in_flash_func(dma_tx_start)(void)
     {
         if (enable_output)
         {
-            dma_tx_check_ahb_errors();
+            if (dma_tx_check_ahb_errors())
+                return;
             dma_tx_schedule();
             if (dma_tx.using != 0)
                 prefill_waiting_for_pio = false;
@@ -436,7 +461,8 @@ void __not_in_flash_func(dma_tx_start)(void)
     {
         dma_tail_seen = false;
     }
-    dma_tx_check_ahb_errors();
+    if (dma_tx_check_ahb_errors())
+        return;
     dma_tx_schedule();
     dma_tx_check_pio_stall(time_us_32());
 }
@@ -448,6 +474,9 @@ void dma_stop_and_clear(void)
     hw_clear_bits(&dma_hw->ch[dma_ch].al1_ctrl, DMA_CH0_CTRL_TRIG_EN_BITS);
     dma_channel_abort((uint)dma_ch);
     dma_hw->intr = 1u << dma_ch;
+    const uint32_t ctrl = dma_hw->ch[dma_ch].al1_ctrl;
+    dma_hw->ch[dma_ch].al1_ctrl = ctrl |
+        DMA_CH0_CTRL_TRIG_READ_ERROR_BITS | DMA_CH0_CTRL_TRIG_WRITE_ERROR_BITS;
 
 #if USB_CDC_ENABLED
     cdc_diagnostics_silence_end(true);
@@ -459,7 +488,6 @@ void dma_stop_and_clear(void)
     dma_tx_reset();
     dma_running = false;
     dma_running_pcm = false;
-    dma_ahb_error_seen = false;
 
     enable_output = false;
     enable_output_prev = false;
@@ -467,4 +495,14 @@ void dma_stop_and_clear(void)
     hw_set_bits(&dma_hw->ch[dma_ch].al1_ctrl, DMA_CH0_CTRL_TRIG_EN_BITS);
     dma_channel_set_irq0_enabled((uint)dma_ch, true);
     restore_interrupts(irq_state);
+}
+
+uint8_t dma_tx_recover_fault(void)
+{
+    const uint32_t error = atomic_load_explicit(&dma_ahb_fault, memory_order_acquire);
+    dma_stop_and_clear();
+    atomic_store_explicit(&dma_fault_quiescent, false, memory_order_relaxed);
+    atomic_store_explicit(&dma_ahb_fault, 0u, memory_order_release);
+    return (uint8_t)(((error & DMA_CH0_CTRL_TRIG_READ_ERROR_BITS) ? 1u : 0u) |
+                     ((error & DMA_CH0_CTRL_TRIG_WRITE_ERROR_BITS) ? 2u : 0u));
 }

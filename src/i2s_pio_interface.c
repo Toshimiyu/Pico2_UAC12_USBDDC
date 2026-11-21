@@ -68,7 +68,7 @@ void I2S_32bit_program_init(PIO pio, uint sm, uint data_pin, uint sideset_base, 
 void I2S_32bit_inv_program_init(PIO pio, uint sm, uint data_pin, uint sideset_base, uint freq, pio_sm_config *sm_config_out, uint *offset_out)
 {
 	uint offset = pio_add_program(pio, &I2S_32bit_inv_program);
-	pio_sm_config sm_config = I2S_32bit_program_get_default_config(offset);
+	pio_sm_config sm_config = I2S_32bit_inv_program_get_default_config(offset);
 
 	pio_gpio_init(pio, data_pin);
 	pio_gpio_init(pio, sideset_base);

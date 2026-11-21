@@ -10,6 +10,7 @@
 #include "hardware/sync.h"
 #include "arm_math.h"
 #include <math.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #if !USB_CDC_ENABLED
@@ -77,7 +78,7 @@ static float fb_gain[SUPPORTED_RATE_COUNT][SPECTRUM_BAND_COUNT];
 static uint8_t power_to_level_lut[DB_LUT_EXP_COUNT][DB_LUT_MANTISSA_COUNT];
 static float hann_sum;
 static arm_rfft_fast_instance_f32 fft;
-static bool initialized;
+static atomic_bool initialized;
 static bool discard_next_frame;
 static int8_t processing_index = -1;
 static uint8_t processing_rate; // rate tables latched at the start of a frame (left and right use the same)
@@ -211,7 +212,7 @@ for (int exponent = DB_LUT_MIN_EXP; exponent <= 0; ++exponent) {
         power_to_level_lut[exponent - DB_LUT_MIN_EXP][mantissa] = (uint8_t)(scaled + 0.5f);
     }
 }
-initialized = true;
+atomic_store_explicit(&initialized, true, memory_order_release);
 }
 
 void spectrum_set_sample_rate(uint32_t sample_rate)
@@ -288,7 +289,7 @@ low_goertzel_pos = 0;
 
 void spectrum_feed(float left_q31, float right_q31)
 {
-if (!initialized) return;
+if (!atomic_load_explicit(&initialized, memory_order_acquire)) return;
 low_goertzel_feed(left_q31, right_q31);
 if (state[fill_index] != BUFFER_FILLING) {
 const uint8_t other = fill_index ^ 1u;
@@ -319,7 +320,7 @@ capture_pos = 0;
 
 void spectrum_feed_block(const float *left_q31, const float *right_q31, uint32_t length)
 {
-if (!initialized) return;
+if (!atomic_load_explicit(&initialized, memory_order_acquire)) return;
 for (uint32_t i = 0; i < length; ++i)
 spectrum_feed(left_q31[i], right_q31[i]);
 }
@@ -358,7 +359,7 @@ for (uint8_t band = 0; band < SPECTRUM_BAND_COUNT; ++band) {
 bool spectrum_process_left(uint8_t left[SPECTRUM_BAND_COUNT])
 {
 if (processing_index >= 0) return false;
-if (!initialized || ready_index < 0) return false;
+if (!atomic_load_explicit(&initialized, memory_order_acquire) || ready_index < 0) return false;
 const uint8_t index = (uint8_t)ready_index;
 __dmb();
 ready_index = -1;

@@ -1119,8 +1119,12 @@ bool display_rta_page_service(void)
             page_draw_end_capture();
             break;
         case DISPLAY_PAGE_DIAGNOSTICS:
+        case DISPLAY_PAGE_FEEDBACK:
 #if USB_CDC_ENABLED
         case DISPLAY_PAGE_STARTUP_LOG:
+#endif
+#if USB_PACKET_TRACE_ENABLE
+        case DISPLAY_PAGE_PACKET_TRACE:
 #endif
             page_ready = true;
             break;

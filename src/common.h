@@ -33,8 +33,8 @@
 // Faster I2S slew rate
 #define I2S_SLEWRATE_FAST_ENABLE (false)
 
-// Enhancement I2S signal output current
-#define I2S_STRENGTH_REINFORCE_ENABLE (false)
+// Set I2S output drive strength to 2 mA instead of leaving it unchanged.
+#define I2S_DRIVE_STRENGTH_2MA_ENABLE (false)
 
 // I2S Pin : sideset0:BCLK, sideset1:LRCK (if No Changed)
 #define I2S_SIDESET_CHANGE (false)
@@ -82,8 +82,9 @@
 // User Configurable end ------------------------------------------------------------
 
 // System Clock
-#define SYS_CLOCK_KHZ_44K (336000)
+#define SYS_CLOCK_KHZ_44K1_88K2 (330000)
 #define SYS_CLOCK_KHZ_48K (360000)
+#define SYS_CLOCK_KHZ_176K4 (307200)
 
 // Core Voltage
 #define V_CORE_HI VREG_VOLTAGE_1_25
@@ -204,7 +205,7 @@ extern void volume_control(void);
 
 extern void renew_clock(void);
 
-inline int32_t saturation_i32(int32_t in, int32_t max, int32_t min)
+static inline int32_t saturation_i32(int32_t in, int32_t max, int32_t min)
 {
 	if (in > max)
 		return max;
@@ -213,7 +214,7 @@ inline int32_t saturation_i32(int32_t in, int32_t max, int32_t min)
 	return in;
 }
 
-inline float saturation_f32(float in, float max, float min)
+static inline float saturation_f32(float in, float max, float min)
 {
 	if (in > max)
 		return max;

@@ -11,6 +11,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "usb_audio_config.h"
+#if USB_PACKET_TRACE_ENABLE
+#include "usb_packet_trace.h"
+#endif
 #if USB_CDC_ENABLED
 #include "feedback_diagnostics.h"
 #endif
@@ -164,6 +167,13 @@ uint32_t usb_audio_get_feedback_limit_hz(void);
 uint32_t usb_audio_get_packets_per_sec(void);
 uint32_t usb_audio_get_avg_packet_bytes(void);
 bool usb_audio_get_history_sample(uint32_t age, usb_audio_history_sample_t *sample);
+#if USB_PACKET_TRACE_ENABLE
+void usb_audio_packet_trace_record(uint16_t length, uint8_t endpoint, uint8_t alt);
+void usb_audio_packet_trace_arm(void);
+void usb_audio_packet_trace_summary(uint16_t *count, bool *frozen, uint32_t *start_rate);
+bool usb_audio_packet_trace_get(uint16_t index, usb_packet_trace_entry_t *entry,
+                               uint32_t *elapsed_us);
+#endif
 
 void usb_audio_get_event(uint32_t age, char out[8]);
 uint32_t usb_audio_get_event_time_us(uint32_t age); // time_us_32() stamp of the same event (0 = none)

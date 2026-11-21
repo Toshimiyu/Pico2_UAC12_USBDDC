@@ -27,6 +27,7 @@
 #include "common_types.h"
 #include "common.h"
 #include "mute_ramp.h"
+#include "host_rate_window.h"
 #if FB_EXPERIMENTAL_LEVEL_SEED
 #include "feedback_level_seed.h"
 #endif
@@ -70,7 +71,6 @@ volatile bool audio_data_seen = false;
 #define FB_LEVEL_TAU_S (0.064f)	   // level low-pass time constant (removes block-size sawtooth)
 #define FB_LIMIT_PPM (3000.0f)	   // hard limit of the correction : +-0.3 % of fs (never exceeds FB_ADJ_LIMIT Hz)
 #define FB_UPDATE_PERIOD_US (1000) // one update per USB frame
-#define HOST_RATE_UPDATE_US (250000u)
 #define HOST_RATE_STREAM_WARMUP_US (1000000u)
 #define FB_BASE_LIMIT_PPM  (100.0f)
 #define FB_BOOST_START_ERR (128.0f)
@@ -446,8 +446,7 @@ static int32_t pcm_stereo[RX_CHUNK_FRAMES * 2u];
 // Counts the frames actually received from the host
 
 static uint32_t rx_frames_counter = 0;
-static uint32_t host_win_t0_us = 0;
-static uint32_t host_win_frames0 = 0;
+static host_rate_window_t host_rate_window;
 static uint32_t host_rate_hz = 0;
 static uint64_t stream_start_us = 0;
 
@@ -458,9 +457,59 @@ static volatile uint32_t pkt_bytes_total = 0;
 
 static uint32_t pkt_win_count0 = 0;
 static uint32_t pkt_win_bytes0 = 0;
+static uint32_t pkt_win_t0_us = 0;
 
 static uint32_t pkt_per_sec = 0;
 static uint32_t pkt_avg_bytes = 0;
+
+#if USB_PACKET_TRACE_ENABLE
+static usb_packet_trace_t packet_trace;
+
+void usb_audio_packet_trace_record(uint16_t length, uint8_t endpoint, uint8_t alt)
+{
+    if (!packet_trace.frozen)
+        usb_packet_trace_add(&packet_trace, time_us_32(), length, endpoint, alt,
+                             packet_trace.count == 0 ?
+                                 usb_audio_get_current_rate() : packet_trace.start_rate);
+}
+
+void usb_audio_packet_trace_arm(void)
+{
+    const uint32_t irq_state = save_and_disable_interrupts();
+    usb_packet_trace_arm(&packet_trace);
+    restore_interrupts(irq_state);
+}
+
+void usb_audio_packet_trace_summary(uint16_t *count, bool *frozen, uint32_t *start_rate)
+{
+    const uint32_t irq_state = save_and_disable_interrupts();
+    *count = packet_trace.count;
+    *frozen = packet_trace.frozen;
+    *start_rate = packet_trace.start_rate;
+    restore_interrupts(irq_state);
+}
+
+bool usb_audio_packet_trace_get(uint16_t index, usb_packet_trace_entry_t *entry,
+                               uint32_t *elapsed_us)
+{
+    const uint32_t irq_state = save_and_disable_interrupts();
+    const bool present = index < packet_trace.count;
+    if (present)
+    {
+        *entry = packet_trace.entries[index];
+        *elapsed_us = entry->timestamp_us - packet_trace.entries[0].timestamp_us;
+    }
+    restore_interrupts(irq_state);
+    return present;
+}
+
+static void usb_audio_packet_trace_stop(void)
+{
+    const uint32_t irq_state = save_and_disable_interrupts();
+    usb_packet_trace_stop(&packet_trace);
+    restore_interrupts(irq_state);
+}
+#endif
 
 #if defined(TUD_AUDIO_DESC_IAD)
 
@@ -618,8 +667,7 @@ void usb_audio_set_diagnostics_enabled(bool enabled)
 	diagnostics_enabled = enabled;
 	if (enabled)
 	{
-		host_win_t0_us = time_us_32();
-		host_win_frames0 = rx_frames_counter;
+		pkt_win_t0_us = time_us_32();
 		pkt_win_count0 = pkt_count_total;
 		pkt_win_bytes0 = pkt_bytes_total;
 		loop0_prev_us = 0;
@@ -712,9 +760,7 @@ void usb_audio_reset_diagnostics(void)
 	stats.level_now = (int32_t)audio_ring_total_frames();
 	stats.ring_pool_now = stats.level_now + (int32_t)dma_tx_pool_frames();
 
-	host_win_t0_us = now;
-	host_win_frames0 = rx_frames_counter;
-	host_rate_hz = 0;
+	pkt_win_t0_us = now;
 	pkt_win_count0 = pkt_count_total;
 	pkt_win_bytes0 = pkt_bytes_total;
 	pkt_per_sec = 0;
@@ -788,6 +834,10 @@ uint32_t usb_audio_get_current_rate(void)
 
 void usb_audio_apply_sample_rate(uint32_t new_freq)
 {
+#if USB_PACKET_TRACE_ENABLE
+	if (new_freq != usb_audio_get_current_rate())
+		usb_audio_packet_trace_stop();
+#endif
 	    
 	usb_audio_record_event(
         'R',
@@ -888,6 +938,10 @@ bool usb_audio_stream_open(uint8_t alt)
 
     const uint8_t prev_alt = cur_alt;
 
+#if USB_PACKET_TRACE_ENABLE
+    if (prev_alt != 0 && prev_alt != alt)
+        usb_audio_packet_trace_stop();
+#endif
     cur_alt = alt;
     bytes_per_sample = format.bytes_per_sample;
     audio_state.bit_depth = format.bit_depth;
@@ -904,8 +958,7 @@ bool usb_audio_stream_open(uint8_t alt)
 		return true;
 
 	// Same-rate (re)open: the clock does not change, so there is nothing to wait for. Start a fresh
-	// buffer epoch, but with Core1 frozen: clear_ringbuffer() takes no spinlock, so clearing while
-	// Core1 reads the Ring could leave size_using negative.
+	// buffer epoch, with Core1 frozen so the ring and related state reset together.
 	// Full-Speed can not carry 24/32bit above 96kHz : do not pretend to play it
 	rate_unsupported = !stream_rate_supported(alt, audio_state.freq);
 	if (rate_unsupported)
@@ -924,6 +977,9 @@ bool usb_audio_stream_open(uint8_t alt)
 
 void usb_audio_stream_close(void)
 {
+#if USB_PACKET_TRACE_ENABLE
+	usb_audio_packet_trace_stop();
+#endif
 	    usb_audio_record_event(
         'C',
         cur_alt,
@@ -1605,29 +1661,19 @@ static void service_host_rate(void)
 
     if (stats.state == USB_AUDIO_IDLE || stats.state == USB_AUDIO_SWITCHING)
     {
-        host_rate_hz = 0;
+        host_rate_window_update(&host_rate_window, now, rx_frames_counter, false, &host_rate_hz);
         pkt_per_sec = 0;
         pkt_avg_bytes = 0;
 
-        host_win_t0_us = now;
-        host_win_frames0 = rx_frames_counter;
-
+        pkt_win_t0_us = now;
         pkt_win_count0 = pkt_count_total;
         pkt_win_bytes0 = pkt_bytes_total;
 
         return;
     }
 
-    const uint32_t dt = now - host_win_t0_us;
-
-    if (dt < HOST_RATE_UPDATE_US)
-        return;
-
-    host_rate_hz =
-        (uint32_t)(
-            ((uint64_t)(rx_frames_counter - host_win_frames0) * 1000000ull
-             + dt / 2u) / dt);
-
+    const uint32_t pkt_dt = now - pkt_win_t0_us;
+    if (diagnostics_enabled && pkt_dt >= HOST_RATE_UPDATE_US)
     {
         const uint32_t cnt   = pkt_count_total;
         const uint32_t bytes = pkt_bytes_total;
@@ -1636,14 +1682,19 @@ static void service_host_rate(void)
         const uint32_t dbytes = bytes - pkt_win_bytes0;
 
         pkt_per_sec =
-            (uint32_t)(((uint64_t)dcnt * 1000000ull + dt / 2u) / dt);
+            (uint32_t)(((uint64_t)dcnt * 1000000ull + pkt_dt / 2u) / pkt_dt);
 
         pkt_avg_bytes =
             dcnt ? (dbytes + dcnt / 2u) / dcnt : 0u;
 
         pkt_win_count0 = cnt;
         pkt_win_bytes0 = bytes;
+        pkt_win_t0_us = now;
     }
+
+    const uint32_t dt = now - host_rate_window.time_us;
+    if (!host_rate_window_update(&host_rate_window, now, rx_frames_counter, true, &host_rate_hz))
+        return;
 
     // Exclude rate windows that overlap the first second of STREAMING.
     if (diagnostics_enabled && stats.state == USB_AUDIO_STREAMING &&
@@ -1657,8 +1708,26 @@ static void service_host_rate(void)
             stats.max_hf_diff = d;
     }
 
-    host_win_t0_us = now;
-    host_win_frames0 = rx_frames_counter;
+}
+
+static void service_dma_fault(void)
+{
+    if (!dma_tx_fault_pending())
+        return;
+
+    multicore_lockout_start_blocking();
+    const uint32_t discarded_frames = dma_tx_pool_frames();
+    const uint8_t error = dma_tx_recover_fault();
+    stats.drop_clear_frames += discarded_frames;
+    usb_audio_log_anomaly(10, error, "DROP_FRAMES_UPPER", discarded_frames);
+    if (stats.state == USB_AUDIO_STREAMING ||
+        stats.state == USB_AUDIO_OVERFLOW_FATAL ||
+        stats.state == USB_AUDIO_UNDERFLOW_FATAL)
+    {
+        set_state(USB_AUDIO_BUFFERING);
+        fb_reset();
+    }
+    multicore_lockout_end_blocking();
 }
 
 //--------------------------------------------------------------------+
@@ -1713,6 +1782,7 @@ void usb_audio_task(void)
     }
     loop0_prev_us = diagnostics_enabled ? loop_now_us : 0;
 
+    service_dma_fault();
     tud_task();
 #if FB_EXPERIMENTAL_OFFSET_SEED
     if (__atomic_exchange_n(&offset_usb_reset_pending, 0u, __ATOMIC_ACQ_REL))
@@ -1729,12 +1799,12 @@ void usb_audio_task(void)
     return;
 #endif
 
+    service_dma_fault();
     service_switch();
     service_rx();
     service_state();
     service_feedback();
-    if (diagnostics_enabled)
-        service_host_rate();
+    service_host_rate();
     record_audio_history();
 }
 

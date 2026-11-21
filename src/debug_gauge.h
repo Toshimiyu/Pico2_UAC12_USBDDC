@@ -14,9 +14,13 @@
 #define _DEBUG_GAUGE_H_
 
 #include <stdint.h>
+#include "usb_audio_config.h"
 
 #ifndef DEBUG_GAUGE_ENABLE
 #define DEBUG_GAUGE_ENABLE (1)
+#endif
+#if USB_PACKET_TRACE_ENABLE && !DEBUG_GAUGE_ENABLE
+#error "USB_PACKET_TRACE_ENABLE requires DEBUG_GAUGE_ENABLE"
 #endif
 
 #if DEBUG_GAUGE_ENABLE
@@ -28,16 +32,24 @@ extern void debug_gauge_reset(void);
 extern void debug_gauge_set_reset_countdown(uint8_t seconds_remaining);
 // Call every main-loop pass while the diagnostics page is active.
 extern void debug_gauge_service(void);
+extern void feedback_page_init(void);
+extern void feedback_page_service(void);
 extern void startup_log_init(void);
 extern void startup_log_service(void);
+extern void packet_trace_page_init(void);
+extern void packet_trace_page_service(void);
 extern uint32_t debug_gauge_buffer_bytes(void);
 #else
 static inline void debug_gauge_init(void) {}
 static inline void debug_gauge_reset(void) {}
 static inline void debug_gauge_set_reset_countdown(uint8_t seconds_remaining) {(void)seconds_remaining;}
 static inline void debug_gauge_service(void) {}
+static inline void feedback_page_init(void) {}
+static inline void feedback_page_service(void) {}
 static inline void startup_log_init(void) {}
 static inline void startup_log_service(void) {}
+static inline void packet_trace_page_init(void) {}
+static inline void packet_trace_page_service(void) {}
 static inline uint32_t debug_gauge_buffer_bytes(void) { return 0u; }
 #endif
 

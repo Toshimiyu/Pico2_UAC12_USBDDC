@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdatomic.h>
 
+// Used by usb_audio.c; neither file is included in the current firmware target.
 #define AUDIO_RING_BUFFER_FRAMES 2048
 
 typedef struct {

@@ -1,0 +1,3 @@
+#ifndef TEST_PICO_MULTICORE_H
+#define TEST_PICO_MULTICORE_H
+#endif

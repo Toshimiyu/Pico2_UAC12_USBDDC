@@ -72,9 +72,10 @@ The X button on Pico Display Pack 2.0 cycles through the following screens in on
 - Boot Screen
 - Playback Screen (CDC-disabled builds only)
 - Diagnostic Screen
+- Feedback Monitor screen
 - Playback Start Log screen (CDC-enabled builds only)
 
-- X : Next screen (Boot → Diagnostics → Playback Start Log → Boot with CDC enabled; Boot → Playback → Diagnostics → Boot otherwise)
+- X : Next screen (Boot → Diagnostics → Feedback Monitor → Playback Start Log → Boot with CDC enabled; Boot → Playback → Diagnostics → Feedback Monitor → Boot otherwise)
 
 On the diagnostic screen:
 
@@ -83,13 +84,22 @@ On the diagnostic screen:
 - A+B : Toggle between USB events and recent audio-state history
 - Hold Y for 3 seconds : Reset diagnostic counters and the USB event log (a countdown is shown while holding)
 
-USB event logging starts at boot, and the latest 64 events (256 in CDC-enabled builds) remain available on the Diagnostics screen. It records events such as USB bus resets/disconnects, device/configuration/string descriptor requests, configuration mount/unmount, and UAC control requests. This is event-driven logging, not a periodic playback-state log, so the display does not change while playback continues without a new event. Track changes and other USB audio state transitions may add new entries. Holding Y for 3 seconds clears the collected diagnostic values and USB event log; logging resumes with subsequent events. The O/F/S/C/U event counters are updated when events occur regardless of the active screen. Periodic diagnostic statistics, such as buffer levels and processing intervals, are collected while the Diagnostics screen is active or CDC is connected. Collected diagnostic values are retained when leaving the screen, and collection resumes from those values when it is reopened. The playback screen continues audio playback, FFT, and bit-depth/sample-rate display.
+USB event logging starts at boot, and the latest 64 events (256 in CDC-enabled builds) remain available on the Diagnostics screen. It records events such as USB bus resets/disconnects, device/configuration/string descriptor requests, configuration mount/unmount, and UAC control requests. This is event-driven logging, not a periodic playback-state log, so the display does not change while playback continues without a new event. Track changes and other USB audio state transitions may add new entries. Holding Y for 3 seconds clears the collected diagnostic values and USB event log; logging resumes with subsequent events. The O/F/S/C/U event counters are updated when events occur regardless of the active screen. Periodic diagnostic statistics, such as buffer levels and processing intervals, are collected while the Diagnostics, Feedback Monitor, or packet capture screen is active, or CDC is connected. Collected diagnostic values are retained when leaving the screen, and collection resumes from those values when it is reopened. The playback screen continues audio playback, FFT, and bit-depth/sample-rate display.
 
 In the log header, `U:Y` means USB is configured and `U:N` means it is not configured. `C:Y` means USB is configured, not suspended, and CDC DTR is asserted; `C:N` means at least one of those conditions is false. `C:-` indicates a build without CDC. DTR depends on the host's settings, so `C:N` alone does not identify a fault or why a COM port cannot be opened. History is lost on power-off; photograph the screen before unplugging USB if needed.
 
+#### Feedback Monitor screen
+
+Press X on the Diagnostics screen to open `FEEDBACK MONITOR`. It refreshes approximately every 0.5 seconds and draws incrementally when audio headroom permits.
+
+- `BUF` is the current ring fill and `DEV` is current fill minus the target, in stereo frames.
+- `FB` is the requested feedback rate rounded to integer Hz. `OFF` is the internal feedback rate minus the effective I²S rate, in 0.1 Hz units. It is not just the PI integral term or a measured clock error. Both are unavailable in IDLE or SWITCHING.
+- `1s` gives the minimum and maximum ring fill sampled on this screen over the last completed approximately one-second STREAMING window; `PP` is their difference. Sampling can miss instantaneous DMA extrema. Values are unavailable until a complete window after entry or after streaming resumes.
+- `UF` counts low ring-plus-DMA-pool underflow detections; `OF` counts high ring level or ring-write-failure overflow detections. Hold Y on Diagnostics to reset them. Zero counts do not guarantee the absence of clicks.
+
 #### Playback Start Log screen
 
-In CDC-enabled builds (`USB_BRINGUP_LEVEL=3`), press X on the Diagnostics screen to open `PLAYBACK START LOG`. It records without opening a COM port, including when connected to Android, and can be photographed while connected. `SILENCE EVENTS` counts silence-substitution episodes and `SILENCE FRAMES` counts frames scheduled to DMA since boot; the latter includes any interrupted by a stop, so it is not necessarily the number actually played.
+In CDC-enabled builds (`USB_BRINGUP_LEVEL=3`), press X on the Feedback Monitor screen to open `PLAYBACK START LOG`. It records without opening a COM port, including when connected to Android, and can be photographed while connected. `SILENCE EVENTS` counts silence-substitution episodes and `SILENCE FRAMES` counts frames scheduled to DMA since boot; the latter includes any interrupted by a stop, so it is not necessarily the number actually played.
 
 The newest records are shown first. Press A for older records and B for newer ones. State transitions show uptime seconds (wrapping every 100000 seconds), the previous and next state, sample rate, ring fill `R`, and DMA pool `D`. For example, `BUFF>STRM` shows the levels at playback start. `SILENCE START` marks the first silence block, `SILENCE PCM` the return to PCM, and `SILENCE STOP` a DMA stop; `F` on the end row is the number of frames scheduled in that episode. DMA pool fill is an upper bound including the block being played.
 
@@ -129,7 +139,7 @@ If the FFT bars and peak meters do not move while music is playing, first check 
 
 ### Diagnostic Screen
 
-The X button cycles through Boot → Playback → Diagnostics in normal builds, or Boot → Diagnostics → Playback Start Log in CDC-enabled builds. Y does not navigate between screens; holding it for 3 seconds on the Diagnostics screen resets the diagnostic counters and USB event log.
+The X button cycles through Boot → Playback → Diagnostics → Feedback Monitor in normal builds, or Boot → Diagnostics → Feedback Monitor → Playback Start Log in CDC-enabled builds. Diagnostic builds with packet capture enabled add the packet capture screen after Playback Start Log. Y does not navigate between screens; holding it for 3 seconds on the Diagnostics screen resets the diagnostic counters and USB event log and rearms packet capture when enabled. See the [Android test procedure](ANDROID_TEST_EN.md) for operation and limitations.
 
 #### Audio Status Information
 
@@ -203,7 +213,7 @@ The right side of the diagnostic screen displays processing statistics.
 
 O/F/S/C/U are displayed with four digits and values above 9999 are shown as 9999.
 
-O/F/S/C/U are incremented when their events occur, regardless of the active screen, and show counts accumulated since reset. T counts DMA tail-block output conditions, but is incremented only while diagnostics are enabled and audio is streaming. Periodic measurements such as a/b and buffer levels are also collected only while the Diagnostics screen is active.
+O/F/S/C/U are incremented when their events occur, regardless of the active screen, and show counts accumulated since reset. T counts DMA tail-block output conditions, but is incremented only while diagnostics are enabled and audio is streaming. Periodic measurements such as a/b and buffer levels are also collected while Diagnostics, Feedback Monitor, or the packet capture screen is active, or CDC is connected.
 
 For stable operation:
 
@@ -265,3 +275,5 @@ Diagnostic information is not overlaid on the playback screen.
 ## Audio Anomaly Codes and State History
 
 Audio-state history is recorded about every 100 ms during playback. When an anomaly is detected, the approximately 4.8 seconds before and 1.6 seconds after it are retained as a frozen history for review. Detected anomalies are added to the USB log as red `E` entries: `01` buffer underflow, `02` overflow/discard, `03` old data discarded when the USB receive FIFO is near capacity, `04` USB bus reset/disconnect, `05` playback output stop, `06` Core0 loop interval overrun, `07` Core1 loop interval overrun, `08` USB OUT packet interval of at least 3 ms, `09` PIO TX FIFO stall, `0A` DMA AHB transfer error, `0B` invalid PCM format, `0C` invalid PCM frame boundary, and `0D` click candidate. Click candidates can also be normal audio. These events also record state, rate, ring fill, and DMA-pool level in the CDC log. PIO stall monitoring starts 10 ms after output begins. Each history entry shows uptime seconds, audio state, ring-buffer level, and DMA-pool level.
+
+On `0A`, DMA is stopped and cleared, and playback re-enters buffering if necessary. Detail bit 0 indicates a READ error and bit 1 a WRITE error. `DROP_FRAMES_UPPER` is an upper bound on the DMA-pool frames discarded during recovery; it can include a partially played block. The same upper bound is added to the clear-discard counter. Anomaly logging is rate-limited, so repeated faults may not all be logged. Recovery requires hardware validation.

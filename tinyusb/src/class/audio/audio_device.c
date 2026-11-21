@@ -376,6 +376,9 @@ tu_static CFG_TUD_MEM_SECTION audiod_function_t _audiod_fct[CFG_TUD_AUDIO];
 
 #if CFG_TUD_AUDIO_ENABLE_EP_OUT
 static bool audiod_rx_xfer_isr(uint8_t rhport, audiod_function_t* audio, uint16_t n_bytes_received);
+#if USB_PACKET_TRACE_ENABLE
+extern void usb_audio_packet_trace_record(uint16_t length, uint8_t endpoint, uint8_t alt);
+#endif
 #endif
 
 #if CFG_TUD_AUDIO_ENABLE_EP_IN
@@ -1505,6 +1508,10 @@ bool audiod_xfer_isr(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint
 #if CFG_TUD_AUDIO_ENABLE_EP_OUT
     // New audio packet received
     if (audio->ep_out == ep_addr) {
+#if USB_PACKET_TRACE_ENABLE
+      if (result == XFER_RESULT_SUCCESS)
+        usb_audio_packet_trace_record((uint16_t) xferred_bytes, ep_addr, audio->ep_out_alt);
+#endif
       audiod_rx_xfer_isr(rhport, audio, (uint16_t) xferred_bytes);
       return true;
     }

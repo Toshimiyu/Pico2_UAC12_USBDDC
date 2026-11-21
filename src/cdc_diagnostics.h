@@ -3,7 +3,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdbool.h>
 #include "usb_device_control.h"
 #include "dma_pcm_trace.h"
 #if FB_EXPERIMENTAL_OFFSET_SEED

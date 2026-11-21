@@ -6,7 +6,7 @@
 #
 
 # Select the required CMSIS-DSP source files (keep the list minimal for the functions in use).
-file(GLOB DSP_SRC
+set(DSP_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS/DSP/Source/TransformFunctions/arm_cfft_f32.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS/DSP/Source/TransformFunctions/arm_cfft_init_f32.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS/DSP/Source/TransformFunctions/arm_cfft_radix8_f32.c
@@ -36,6 +36,17 @@ option(FB_EXPERIMENTAL_TARGET "Use a 50% (2048-frame) feedback target" ON)
 option(FB_EXPERIMENTAL_LEVEL_SEED "Seed the feedback filter after initial DMA prefill" ON)
 option(FB_EXPERIMENTAL_ANTI_WINDUP "Use conditional feedback integration" ON)
 option(FB_EXPERIMENTAL_RATE_GAINS "Use sample-rate-scaled feedback gains" ON)
+option(USB_PACKET_TRACE_ENABLE "Capture received USB audio packet lengths in RAM" OFF)
+if(USB_PACKET_TRACE_ENABLE AND NOT USB_BRINGUP_LEVEL STREQUAL "3")
+        message(FATAL_ERROR "USB_PACKET_TRACE_ENABLE requires USB_BRINGUP_LEVEL=3")
+endif()
+if(USB_PACKET_TRACE_ENABLE)
+        get_filename_component(PACKET_TRACE_TINYUSB "${PICO_TINYUSB_PATH}" REALPATH)
+        get_filename_component(PACKET_TRACE_BUNDLED_TINYUSB "${CMAKE_CURRENT_LIST_DIR}/../tinyusb" REALPATH)
+        if(NOT PACKET_TRACE_TINYUSB STREQUAL PACKET_TRACE_BUNDLED_TINYUSB)
+                message(FATAL_ERROR "USB_PACKET_TRACE_ENABLE requires the repository's TinyUSB")
+        endif()
+endif()
 if(DEFINED FB_EXPERIMENTAL_OFFSET_SEED)
         if(NOT DEFINED USB_AUDIO_ENABLE_OFFSET_SEED)
                 set(USB_AUDIO_ENABLE_OFFSET_SEED "${FB_EXPERIMENTAL_OFFSET_SEED}" CACHE BOOL
@@ -57,23 +68,22 @@ if(USB_AUDIO_ENABLE_OFFSET_SEED AND NOT FB_EXPERIMENTAL_RATE_GAINS)
         message(FATAL_ERROR "USB_AUDIO_ENABLE_OFFSET_SEED requires FB_EXPERIMENTAL_RATE_GAINS=ON")
 endif()
 
-set(PICO_FIRMWARE_VERSION "v2.2")
-set(PICO_FIRMWARE_DISPLAY_VERSION "2.2")
-if(USB_AUDIO_ENABLE_OFFSET_SEED)
-        set(PICO_FIRMWARE_VERSION "v2.2")
-        set(PICO_FIRMWARE_DISPLAY_VERSION "2.2")
-elseif(FB_EXPERIMENTAL_RATE_GAINS)
-        set(PICO_FIRMWARE_VERSION "2.2-tgt2048-seed-aw-rate")
-        set(PICO_FIRMWARE_DISPLAY_VERSION "2.2-rate")
-elseif(FB_EXPERIMENTAL_ANTI_WINDUP)
-        set(PICO_FIRMWARE_VERSION "2.2-tgt2048-seed-aw")
-        set(PICO_FIRMWARE_DISPLAY_VERSION "2.2-aw")
-elseif(FB_EXPERIMENTAL_LEVEL_SEED)
-        set(PICO_FIRMWARE_VERSION "2.2-tgt2048-seed")
-        set(PICO_FIRMWARE_DISPLAY_VERSION "2.2-seed")
-elseif(FB_EXPERIMENTAL_TARGET)
-        set(PICO_FIRMWARE_VERSION "2.2-tgt2048")
-        set(PICO_FIRMWARE_DISPLAY_VERSION "2.2-tgt2048")
+set(PICO_FIRMWARE_VERSION "v2.3")
+set(PICO_FIRMWARE_DISPLAY_VERSION "2.3")
+if(NOT USB_AUDIO_ENABLE_OFFSET_SEED)
+        if(FB_EXPERIMENTAL_RATE_GAINS)
+                set(PICO_FIRMWARE_VERSION "2.3-tgt2048-seed-aw-rate")
+                set(PICO_FIRMWARE_DISPLAY_VERSION "2.3-rate")
+        elseif(FB_EXPERIMENTAL_ANTI_WINDUP)
+                set(PICO_FIRMWARE_VERSION "2.3-tgt2048-seed-aw")
+                set(PICO_FIRMWARE_DISPLAY_VERSION "2.3-aw")
+        elseif(FB_EXPERIMENTAL_LEVEL_SEED)
+                set(PICO_FIRMWARE_VERSION "2.3-tgt2048-seed")
+                set(PICO_FIRMWARE_DISPLAY_VERSION "2.3-seed")
+        elseif(FB_EXPERIMENTAL_TARGET)
+                set(PICO_FIRMWARE_VERSION "2.3-tgt2048")
+                set(PICO_FIRMWARE_DISPLAY_VERSION "2.3-tgt2048")
+        endif()
 endif()
 if(USB_BRINGUP_LEVEL STREQUAL "3")
         string(APPEND PICO_FIRMWARE_VERSION "T")
@@ -146,6 +156,7 @@ target_compile_definitions(Pico2_UAC12_USBDDC PRIVATE
         FB_EXPERIMENTAL_ANTI_WINDUP=$<BOOL:${FB_EXPERIMENTAL_ANTI_WINDUP}>
         FB_EXPERIMENTAL_RATE_GAINS=$<BOOL:${FB_EXPERIMENTAL_RATE_GAINS}>
         FB_EXPERIMENTAL_OFFSET_SEED=$<BOOL:${USB_AUDIO_ENABLE_OFFSET_SEED}>
+        USB_PACKET_TRACE_ENABLE=$<BOOL:${USB_PACKET_TRACE_ENABLE}>
         FW_VERSION="${PICO_FIRMWARE_VERSION}"
         FW_DISPLAY_VERSION="${PICO_FIRMWARE_DISPLAY_VERSION}"
         )

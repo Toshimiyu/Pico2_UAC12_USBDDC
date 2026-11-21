@@ -33,8 +33,11 @@ typedef struct
 
 extern void init_i2s_interface(void);
 extern void reset_i2s_freq(void);
+extern void stop_i2s(void);
 extern void __not_in_flash_func(dma_tx_start)(void);
 extern void dma_stop_and_clear(void);
+extern bool dma_tx_fault_pending(void);
+extern uint8_t dma_tx_recover_fault(void);
 extern void pwm_i2s_streaming_rate_change(void);
 extern void set_pwm_isr_1(float period_us);
 extern DMA_TX_STRUCTURE dma_tx;

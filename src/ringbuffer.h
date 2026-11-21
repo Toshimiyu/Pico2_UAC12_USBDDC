@@ -27,6 +27,7 @@ typedef struct RB
 } RINGBUFFER;
 
 extern int16_t initialize_ringbuffer(uint32_t size, bool no_spinlock, RINGBUFFER *ringbuffer);
+// no_spinlock and the *_no_spinlock operations are only safe without concurrent access.
 extern void clear_ringbuffer(RINGBUFFER *ringbuffer);
 extern bool __not_in_flash_func(ringbuffer_is_full)(RINGBUFFER *ringbuffer);
 extern int64_t __not_in_flash_func(get_size_using)(RINGBUFFER *ringbuffer);

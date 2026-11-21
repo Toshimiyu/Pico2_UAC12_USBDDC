@@ -98,7 +98,12 @@ static void display_service(void)
 	}
 	const display_page_t requested_page = display_rta_get_page();
 	usb_audio_set_diagnostics_enabled(
-		requested_page == DISPLAY_PAGE_DIAGNOSTICS || cdc_diagnostics_is_connected());
+		requested_page == DISPLAY_PAGE_DIAGNOSTICS ||
+		requested_page == DISPLAY_PAGE_FEEDBACK ||
+#if USB_PACKET_TRACE_ENABLE
+		requested_page == DISPLAY_PAGE_PACKET_TRACE ||
+#endif
+		cdc_diagnostics_is_connected());
 
 	if (display_rta_page_service())
 	{
@@ -107,10 +112,20 @@ static void display_service(void)
 		{
 			debug_gauge_init();
 		}
+		else if (page == DISPLAY_PAGE_FEEDBACK)
+		{
+			feedback_page_init();
+		}
 #if USB_CDC_ENABLED
 		else if (page == DISPLAY_PAGE_STARTUP_LOG)
 		{
 			startup_log_init();
+		}
+#endif
+#if USB_PACKET_TRACE_ENABLE
+		else if (page == DISPLAY_PAGE_PACKET_TRACE)
+		{
+			packet_trace_page_init();
 		}
 #endif
 #if !USB_CDC_ENABLED
@@ -139,10 +154,20 @@ static void display_service(void)
 	{
 		debug_gauge_service();
 	}
+	else if (page == DISPLAY_PAGE_FEEDBACK)
+	{
+		feedback_page_service();
+	}
 #if USB_CDC_ENABLED
 	else if (page == DISPLAY_PAGE_STARTUP_LOG)
 	{
 		startup_log_service();
+	}
+#endif
+#if USB_PACKET_TRACE_ENABLE
+	else if (page == DISPLAY_PAGE_PACKET_TRACE)
+	{
+		packet_trace_page_service();
 	}
 #endif
 }
@@ -204,7 +229,7 @@ int main(void)
 	// Increase the operating voltage and clock speed.
 	vreg_set_voltage(V_CORE_HI);
 	sleep_ms(2);
-	set_sys_clock_khz(SYS_CLOCK_KHZ_44K, true);
+	set_sys_clock_khz(SYS_CLOCK_KHZ_44K1_88K2, true);
 	sleep_us(1);
 
 	// Enable the test mode pins.
@@ -217,7 +242,8 @@ int main(void)
 	}
 
 	// Initialize buffers.
-	initialize_ringbuffer(SIZE_AUDIO_RING_FRAMES * 2u, false, &buffer_audio);
+	if (initialize_ringbuffer(SIZE_AUDIO_RING_FRAMES * 2u, false, &buffer_audio) != 0)
+		panic("Audio ring buffer allocation failed");
 
 	// Initialize audio status.
 	audio_state.freq = AUDIO_INITIAL_FREQ;
