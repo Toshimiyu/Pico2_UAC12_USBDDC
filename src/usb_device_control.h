@@ -140,6 +140,10 @@ extern bool usb_audio_rate_supported(uint32_t freq);
 extern void usb_audio_apply_sample_rate(uint32_t freq); // reconfigure I2S and clear queued PCM
 extern bool usb_audio_stream_open(uint8_t alt);			 // AS interface alternate setting
 extern void usb_audio_stream_close(void);				 // AS interface alt 0 / unmount
+extern void usb_audio_suspend(void);
+extern void usb_audio_restart_buffering(void);
+extern void usb_audio_discard_pending_dma(void);
+extern uint32_t usb_audio_rx_sequence(void);
 
 // ----- Diagnostic API (debug_gauge.c) -----
 

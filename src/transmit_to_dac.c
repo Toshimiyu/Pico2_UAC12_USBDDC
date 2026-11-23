@@ -17,7 +17,9 @@
 #include "i2s_pio_interface.h"
 #include "i2s_rate.h"
 #include "cdc_diagnostics.h"
+#include "idle_clock.h"
 #include <stdatomic.h>
+#include <string.h>
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic integers");
 _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic booleans");
 #if FB_EXPERIMENTAL_LEVEL_SEED
@@ -48,6 +50,10 @@ static uint offset;
 
 #define DMA_TX_SRAM_BANK_BYTES (64u * 1024u)
 #define DMA_SILENCE_FRAMES (64u)
+#define DMA_START_FADE_MS (5u)
+#define DMA_STARTUP_SILENCE_US (10000000u)
+#define DAC_ZERO_DETECT_FRAMES (1024u)
+#define DAC_ZERO_SETTLE_MARGIN_US (1000u)
 
 static uint32_t __attribute__((section(".dma_sram_bank7")))
     dma_tx_buffers[DEPTH_DMA_TX_BUFFER][SIZE_DMA_TX_BUF];
@@ -60,7 +66,24 @@ static volatile bool dma_running;
 static volatile bool dma_running_pcm;
 static atomic_uint dma_ahb_fault;
 static atomic_bool dma_fault_quiescent;
-static const uint32_t dma_silence[DMA_SILENCE_FRAMES * 2u] = {0};
+static atomic_bool dma_startup_silence = true;
+static atomic_bool dma_clock_ready = true;
+static volatile bool dma_startup_clock_started;
+static volatile uint32_t dma_startup_silence_since_us;
+static bool dma_idle_clock_stopped;
+static volatile bool dma_restart_in_progress;
+static volatile bool dma_restart_clock_started;
+static volatile uint32_t dma_restart_since_us;
+static idle_clock_timer_t dma_idle_timer;
+static bool dma_idle_silence_started;
+static uint32_t dma_idle_silence_since_us;
+static uint32_t dma_silence[DMA_SILENCE_FRAMES * 4u];
+static volatile bool dma_was_silence = true;
+static volatile bool dma_fade_out_in_flight;
+static uint32_t dma_fade_in_total;
+static uint32_t dma_fade_in_remaining;
+static volatile int32_t dma_last_pcm_left;
+static volatile int32_t dma_last_pcm_right;
 DMA_TX_STRUCTURE dma_tx;
 
 static void dma_tx_reset(void)
@@ -74,6 +97,13 @@ static void dma_tx_reset(void)
         dma_tx.data[i].tx_buf = dma_tx_buffers[i];
         dma_tx.data[i].tx_size = 0;
     }
+    memset(dma_silence, 0, sizeof(dma_silence));
+    dma_was_silence = true;
+    dma_fade_out_in_flight = false;
+    dma_fade_in_total = 0;
+    dma_fade_in_remaining = 0;
+    dma_last_pcm_left = 0;
+    dma_last_pcm_right = 0;
 }
 
 volatile bool enable_output = false;
@@ -129,7 +159,6 @@ static uint16_t pwm_slice;
 void __not_in_flash_func(dma_tx_start)(void);
 static void __not_in_flash_func(dma_tx_schedule)(void);
 static bool dma_tail_seen = false; // lone-block episode already counted
-static bool prefill_waiting_for_pio = false;
 static uint32_t output_start_us;
 
 #if USB_CDC_ENABLED
@@ -166,6 +195,22 @@ bool dma_tx_fault_pending(void)
     return atomic_load_explicit(&dma_fault_quiescent, memory_order_acquire);
 }
 
+bool dma_tx_startup_silence_active(void)
+{
+    return atomic_load_explicit(&dma_startup_silence, memory_order_acquire);
+}
+
+bool dma_tx_clock_ready(void)
+{
+    return atomic_load_explicit(&dma_clock_ready, memory_order_acquire);
+}
+
+bool dma_tx_is_silent(void)
+{
+    return dma_was_silence && !dma_fade_out_in_flight &&
+        !dma_running_pcm && dma_tx.using == 0;
+}
+
 static void __not_in_flash_func(dma_tx_check_pio_stall)(uint32_t now_us)
 {
     const uint32_t stall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
@@ -186,9 +231,15 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
     if (dma_running || atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
         return;
 
-    const uint32_t *buffer;
+    uint32_t *buffer;
     uint32_t words;
-    if (dma_tx.using != 0)
+    if (dma_tx_startup_silence_active() || dma_restart_in_progress)
+    {
+        buffer = dma_silence;
+        words = DMA_SILENCE_FRAMES * 2u;
+        dma_running_pcm = false;
+    }
+    else if (dma_tx.using != 0)
     {
 #if USB_CDC_ENABLED
         if (!dma_running_pcm)
@@ -200,18 +251,63 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         words = dma_tx.data[rp].tx_size;
         dma_tx.rp = (rp + 1u) % DEPTH_DMA_TX_BUFFER;
         dma_running_pcm = true;
+
+        int32_t *samples = (int32_t *)buffer;
+        const uint32_t frames = words / 2u;
+        if (dma_was_silence)
+        {
+            dma_fade_in_total = (audio_state.freq * DMA_START_FADE_MS + 999u) / 1000u;
+            if (dma_fade_in_total == 0u)
+                dma_fade_in_total = 1u;
+            dma_fade_in_remaining = dma_fade_in_total;
+            dma_was_silence = false;
+        }
+        for (uint32_t frame = 0; frame < frames && dma_fade_in_remaining != 0u; frame++)
+        {
+            const uint32_t numerator = dma_fade_in_total - dma_fade_in_remaining + 1u;
+            samples[2u * frame] =
+                (int32_t)(((int64_t)samples[2u * frame] * numerator) / dma_fade_in_total);
+            samples[2u * frame + 1u] =
+                (int32_t)(((int64_t)samples[2u * frame + 1u] * numerator) / dma_fade_in_total);
+            dma_fade_in_remaining--;
+        }
+        dma_last_pcm_left = samples[words - 2u];
+        dma_last_pcm_right = samples[words - 1u];
     }
     else
     {
-            const usb_audio_state_t state = usb_audio_get_state();
-        if (!enable_output ||
-            (state != USB_AUDIO_STREAMING && state != USB_AUDIO_OVERFLOW_FATAL))
-            return;
         buffer = dma_silence;
         words = DMA_SILENCE_FRAMES * 2u;
+        if (!dma_was_silence)
+        {
+            for (uint32_t frame = 0; frame < DMA_SILENCE_FRAMES; frame++)
+            {
+                const int64_t numerator = DMA_SILENCE_FRAMES - frame - 1u;
+                dma_silence[2u * frame] =
+                    (uint32_t)(((int64_t)dma_last_pcm_left * numerator) / DMA_SILENCE_FRAMES);
+                dma_silence[2u * frame + 1u] =
+                    (uint32_t)(((int64_t)dma_last_pcm_right * numerator) / DMA_SILENCE_FRAMES);
+            }
+            words = DMA_SILENCE_FRAMES * 4u;
+            dma_fade_out_in_flight = true;
+            dma_last_pcm_left = 0;
+            dma_last_pcm_right = 0;
+            dma_was_silence = true;
+            dma_fade_in_remaining = 0;
+        }
+        else
+        {
+            memset(dma_silence, 0, sizeof(dma_silence));
+        }
 #if USB_CDC_ENABLED
+        const usb_audio_state_t state = usb_audio_get_state();
+        const bool diagnostic_silence = enable_output &&
+            (state == USB_AUDIO_STREAMING || state == USB_AUDIO_OVERFLOW_FATAL);
         dma_trace_pcm(false, false);
-        cdc_diagnostics_silence_block(DMA_SILENCE_FRAMES);
+        if (diagnostic_silence)
+        {
+            cdc_diagnostics_silence_block(DMA_SILENCE_FRAMES);
+        }
 #endif
         dma_running_pcm = false;
     }
@@ -232,6 +328,20 @@ static void __not_in_flash_func(dma_tx_irq_handler)(void)
         return;
     if (dma_running_pcm && dma_tx.using != 0)
         dma_tx.using--;
+    else if (dma_fade_out_in_flight)
+        dma_fade_out_in_flight = false;
+    if (dma_tx_startup_silence_active() && !dma_startup_clock_started)
+    {
+        pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+        dma_startup_silence_since_us = time_us_32();
+        dma_startup_clock_started = true;
+    }
+    if (dma_restart_in_progress && !dma_restart_clock_started)
+    {
+        pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+        dma_restart_since_us = time_us_32();
+        dma_restart_clock_started = true;
+    }
     dma_running = false;
     dma_tx_schedule();
 #if USB_CDC_ENABLED
@@ -294,6 +404,9 @@ void init_i2s_interface(void)
     irq_set_exclusive_handler(DMA_IRQ_0, dma_tx_irq_handler);
     dma_channel_set_irq0_enabled((uint)dma_ch, true);
     irq_set_enabled(DMA_IRQ_0, true);
+    const uint32_t irq_state = save_and_disable_interrupts();
+    dma_tx_schedule();
+    restore_interrupts(irq_state);
 }
 
 // Notify the I2S transmit timing.
@@ -308,6 +421,12 @@ void __not_in_flash_func(pwm_wrap_handler)(void)
 static volatile bool enable_output_prev = false;
 extern volatile absolute_time_t time_start_output;
 
+static uint32_t dma_zero_detect_us(void)
+{
+    return (DAC_ZERO_DETECT_FRAMES * 1000000u + audio_state.freq - 1u) /
+        audio_state.freq + DAC_ZERO_SETTLE_MARGIN_US;
+}
+
 void __not_in_flash_func(dma_tx_start)(void)
 {
     if (atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
@@ -316,6 +435,110 @@ void __not_in_flash_func(dma_tx_start)(void)
         atomic_store_explicit(&dma_fault_quiescent, true, memory_order_release);
         return;
     }
+
+    uint32_t now_us = time_us_32();
+    const uint32_t rx_sequence = usb_audio_rx_sequence();
+    const bool received = dma_idle_timer.initialized &&
+        dma_idle_timer.sequence != rx_sequence;
+    const bool idle_expired = idle_clock_expired(&dma_idle_timer, now_us, rx_sequence,
+                                                  dma_tx_startup_silence_active());
+    usb_audio_state_t state = usb_audio_get_state();
+
+    if (dma_idle_clock_stopped)
+    {
+        if (!received && state != USB_AUDIO_SWITCHING)
+            return;
+        dma_idle_clock_stopped = false;
+        dma_restart_in_progress = true;
+        dma_restart_clock_started = false;
+        dma_idle_silence_started = false;
+        (void)idle_clock_expired(&dma_idle_timer, now_us, rx_sequence, true);
+        reset_i2s_freq();
+    }
+
+    if (dma_tx_startup_silence_active())
+    {
+        if (!dma_startup_clock_started)
+        {
+            const uint32_t irq_state = save_and_disable_interrupts();
+            dma_tx_schedule();
+            restore_interrupts(irq_state);
+            return;
+        }
+        const uint32_t stall_bit = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+        if ((pio->fdebug & stall_bit) != 0u)
+        {
+            pio->fdebug = stall_bit;
+            dma_startup_silence_since_us = now_us;
+        }
+        else if ((uint32_t)(now_us - dma_startup_silence_since_us) >= DMA_STARTUP_SILENCE_US)
+        {
+            atomic_store_explicit(&dma_startup_silence, false, memory_order_release);
+        }
+        if (dma_tx_startup_silence_active())
+        {
+            const uint32_t irq_state = save_and_disable_interrupts();
+            dma_tx_schedule();
+            restore_interrupts(irq_state);
+            return;
+        }
+    }
+
+    if (dma_restart_in_progress)
+    {
+        if (!dma_restart_clock_started)
+        {
+            const uint32_t irq_state = save_and_disable_interrupts();
+            dma_tx_schedule();
+            restore_interrupts(irq_state);
+            return;
+        }
+        now_us = time_us_32();
+        const uint32_t stall_bit = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+        if ((pio->fdebug & stall_bit) != 0u)
+        {
+            pio->fdebug = stall_bit;
+            dma_restart_since_us = now_us;
+        }
+        else if ((uint32_t)(now_us - dma_restart_since_us) >= dma_zero_detect_us())
+        {
+            dma_restart_in_progress = false;
+            atomic_store_explicit(&dma_clock_ready, true, memory_order_release);
+        }
+        if (dma_restart_in_progress)
+        {
+            const uint32_t irq_state = save_and_disable_interrupts();
+            dma_tx_schedule();
+            restore_interrupts(irq_state);
+            return;
+        }
+    }
+
+    const uint32_t idle_irq_state = save_and_disable_interrupts();
+    const bool quiet = !enable_output && dma_tx_is_silent() &&
+        get_size_using(&buffer_audio) == 0;
+    if (!quiet)
+        dma_idle_silence_started = false;
+    else if (!dma_idle_silence_started)
+    {
+        dma_idle_silence_started = true;
+        dma_idle_silence_since_us = now_us;
+    }
+    if (quiet && idle_expired && state != USB_AUDIO_SWITCHING &&
+        (uint32_t)(now_us - dma_idle_silence_since_us) >= dma_zero_detect_us() &&
+        usb_audio_rx_sequence() == rx_sequence)
+    {
+        atomic_store_explicit(&dma_clock_ready, false, memory_order_release);
+        dma_idle_clock_stopped = true;
+        pio_sm_set_enabled(pio, sm, false);
+        dma_stop_and_clear();
+        pio_sm_set_pins_with_mask(pio, sm, 0,
+            (1u << I2S_DATA_PIN) | (1u << I2S_SIDESET_BASE) | (1u << (I2S_SIDESET_BASE + 1u)));
+        restore_interrupts(idle_irq_state);
+        return;
+    }
+    restore_interrupts(idle_irq_state);
+
     // Loop-interval diagnostics: gap between two calls (this loop also runs the FFT)
     const uint32_t loop_now_us = time_us_32();
     static uint32_t anomaly_loop_prev_us;
@@ -344,35 +567,29 @@ void __not_in_flash_func(dma_tx_start)(void)
     const uint32_t seed_generation =
         atomic_load_explicit(&feedback_seed_generation, memory_order_acquire);
 #endif
-    const usb_audio_state_t state = usb_audio_get_state();
     const bool ring_paused = state == USB_AUDIO_BUFFERING || state == USB_AUDIO_UNDERFLOW_FATAL;
     if (ring_paused)
     {
-        if (enable_output)
+        if (dma_tx_check_ahb_errors())
+            return;
+        const uint32_t irq_state = save_and_disable_interrupts();
+        dma_tx_schedule();
+        if (dma_tx_is_silent())
         {
-            if (dma_tx_check_ahb_errors())
-                return;
-            dma_tx_schedule();
-            if (dma_tx.using != 0)
-                prefill_waiting_for_pio = false;
-            else if (!prefill_waiting_for_pio)
-            {
-                // DMA completion precedes playback of the words still in the PIO.
-                pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
-                prefill_waiting_for_pio = true;
-            }
-            else if ((pio->fdebug & (1u << (PIO_FDEBUG_TXSTALL_LSB + sm))) != 0u)
-                dma_stop_and_clear();
+            if (enable_output && dma_diag.armed)
+                dma_diag.output_stop_count++;
+            enable_output = false;
+            enable_output_prev = false;
         }
+        restore_interrupts(irq_state);
         return;
     }
-    prefill_waiting_for_pio = false;
 
     int32_t level = (int32_t)get_size_using(&buffer_audio) / 2;
     if ((state == USB_AUDIO_STREAMING && level > 0) ||
         (state != USB_AUDIO_STREAMING && level >= SIZE_AUDIO_PREFILL_FRAMES))
         enable_output = true;
-    else if (level == 0 && dma_tx.using == 0 &&
+    else if (level == 0 && dma_tx_is_silent() &&
              state != USB_AUDIO_STREAMING && state != USB_AUDIO_OVERFLOW_FATAL)
     {
         enable_output = false;
@@ -384,16 +601,16 @@ void __not_in_flash_func(dma_tx_start)(void)
         output_start_us = loop_now_us;
         pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
         time_start_output = get_absolute_time();
-        pio_sm_set_enabled(pio, sm, false);
-        pio_sm_clear_fifos(pio, sm);
-        pio_sm_restart(pio, sm);
-        reset_i2s_freq();
     }
+    if (enable_output_prev && !enable_output && dma_diag.armed)
+        dma_diag.output_stop_count++;
     enable_output_prev = enable_output;
 
     if (!enable_output)
     {
-        dma_stop_and_clear();
+        const uint32_t irq_state = save_and_disable_interrupts();
+        dma_tx_schedule();
+        restore_interrupts(irq_state);
         return;
     }
 
@@ -491,16 +708,35 @@ void dma_stop_and_clear(void)
 
     enable_output = false;
     enable_output_prev = false;
-    prefill_waiting_for_pio = false;
     hw_set_bits(&dma_hw->ch[dma_ch].al1_ctrl, DMA_CH0_CTRL_TRIG_EN_BITS);
     dma_channel_set_irq0_enabled((uint)dma_ch, true);
     restore_interrupts(irq_state);
+}
+
+uint32_t dma_tx_discard_pending(void)
+{
+    uint32_t discarded_frames = 0;
+    const uint32_t using = dma_tx.using;
+    const uint32_t preserve = (dma_running && dma_running_pcm && using != 0u) ? 1u : 0u;
+    uint32_t index = (dma_tx.wp + DEPTH_DMA_TX_BUFFER - using) % DEPTH_DMA_TX_BUFFER;
+    for (uint32_t i = preserve; i < using; i++)
+    {
+        discarded_frames += dma_tx.data[index].tx_size / 2u;
+        index = (index + 1u) % DEPTH_DMA_TX_BUFFER;
+    }
+    dma_tx.wp = dma_tx.rp;
+    dma_tx.using = preserve;
+    return discarded_frames;
 }
 
 uint8_t dma_tx_recover_fault(void)
 {
     const uint32_t error = atomic_load_explicit(&dma_ahb_fault, memory_order_acquire);
     dma_stop_and_clear();
+    if (dma_tx_startup_silence_active())
+        dma_startup_clock_started = false;
+    if (dma_restart_in_progress)
+        dma_restart_clock_started = false;
     atomic_store_explicit(&dma_fault_quiescent, false, memory_order_relaxed);
     atomic_store_explicit(&dma_ahb_fault, 0u, memory_order_release);
     return (uint8_t)(((error & DMA_CH0_CTRL_TRIG_READ_ERROR_BITS) ? 1u : 0u) |

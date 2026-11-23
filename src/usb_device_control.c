@@ -16,6 +16,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/sync.h"
@@ -49,6 +50,8 @@ extern uint32_t now_playing;
 // Referenced from main.c / display_rta.c (activity monitor)
 volatile uint32_t audio_last_data_us = 0;
 volatile bool audio_data_seen = false;
+static atomic_uint usb_audio_rx_packets;
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "USB receive tracking requires lock-free atomic integers");
 
 //--------------------------------------------------------------------+
 // Tunables
@@ -219,9 +222,9 @@ usb_audio_usb_counts_t usb_audio_get_usb_counts(void)
 }
 #endif
 
-#if USB_CDC_ENABLED || FB_EXPERIMENTAL_OFFSET_SEED
 void tud_suspend_cb(bool remote_wakeup_en)
 {
+	usb_audio_suspend();
 #if FB_EXPERIMENTAL_OFFSET_SEED
 	__atomic_store_n(&offset_usb_suspend_pending, 1u, __ATOMIC_RELEASE);
 #endif
@@ -238,7 +241,6 @@ void tud_resume_cb(void)
 	usb_audio_record_event('V', 0, 0, 0, true, false);
 #endif
 }
-#endif
 
 #if USB_CDC_ENABLED
 void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts)
@@ -536,6 +538,9 @@ bool tud_audio_rx_done_isr(
     (void)ep_out;
     (void)cur_alt_setting;
 
+    if (n_bytes_received != 0u)
+        atomic_fetch_add_explicit(&usb_audio_rx_packets, 1u, memory_order_relaxed);
+
     if (diagnostics_enabled)
     {
         pkt_count_total++;
@@ -568,6 +573,11 @@ bool tud_audio_rx_done_isr(
     }
 
     return true;
+}
+
+uint32_t usb_audio_rx_sequence(void)
+{
+    return atomic_load_explicit(&usb_audio_rx_packets, memory_order_relaxed);
 }
 
 static void service_rx_packet_gap(void)
@@ -858,6 +868,8 @@ static void service_switch(void)
 {
 	if (stats.state != USB_AUDIO_SWITCHING)
 		return;
+	if (!dma_tx_clock_ready())
+		return;
 
 	const uint32_t waited_us = time_us_32() - switch_t0_us;
 	const bool quiet = !enable_output && (dma_tx.using == 0);
@@ -992,10 +1004,48 @@ void usb_audio_stream_close(void)
 	rate_unsupported = false;
 	// A pending rate change keeps running: it will end in IDLE because cur_alt is 0 now.
 	// Otherwise Core1 simply plays out what is left in the Ring / DMA pool.
-	if (stats.state != USB_AUDIO_SWITCHING)
+	if (stats.state == USB_AUDIO_BUFFERING)
+	{
+		multicore_lockout_start_blocking();
+		set_state(USB_AUDIO_IDLE);
+		clear_audio_buffers();
+		stats.drop_clear_frames += dma_tx_discard_pending();
+		multicore_lockout_end_blocking();
+	}
+	else if (stats.state != USB_AUDIO_SWITCHING)
 		set_state(USB_AUDIO_IDLE);
 	const uint32_t flushed_frames = fifo_flush_frames(); // FIFO tail the host sent just before alt 0
 	stats.drop_clear_frames += flushed_frames;
+}
+
+void usb_audio_suspend(void)
+{
+	cur_alt = 0;
+	rate_unsupported = false;
+	multicore_lockout_start_blocking();
+	set_state(USB_AUDIO_IDLE);
+	clear_audio_buffers();
+	stats.drop_clear_frames += dma_tx_discard_pending();
+	const uint32_t flushed_frames = fifo_flush_frames();
+	stats.drop_clear_frames += flushed_frames;
+	fb_reset();
+	multicore_lockout_end_blocking();
+}
+
+void usb_audio_restart_buffering(void)
+{
+	if (cur_alt != 0 && !rate_unsupported &&
+		(stats.state == USB_AUDIO_STREAMING ||
+		 stats.state == USB_AUDIO_OVERFLOW_FATAL))
+	{
+		set_state(USB_AUDIO_BUFFERING);
+		fb_reset();
+	}
+}
+
+void usb_audio_discard_pending_dma(void)
+{
+	stats.drop_clear_frames += dma_tx_discard_pending();
 }
 
 //--------------------------------------------------------------------+
@@ -1205,8 +1255,9 @@ static void service_rx(void)
 	if (avail > (fifo_depth / 4u) * 3u)
 	{
 		reset_pcm_candidate_history();
+		// Retain 7/12 of the enlarged FIFO to discard about the same byte count as before.
 		const uint16_t retain =
-			(uint16_t)((fifo_depth / 2u / frame_bytes) * frame_bytes);
+			(uint16_t)(((fifo_depth * 7u / 12u) / frame_bytes) * frame_bytes);
 		uint32_t discard = avail - retain;
 		uint32_t dropped_bytes = 0;
 		while (discard != 0)
@@ -1345,21 +1396,21 @@ static void service_state(void)
 	{
 	case USB_AUDIO_BUFFERING:
 	{
-    	uint32_t prefill_frames =
-        	(audio_state.freq * TARGET_PREFILL_MS) / 1000u;
+		uint32_t prefill_frames =
+			(audio_state.freq * TARGET_PREFILL_MS) / 1000u;
 
 		if (prefill_frames < USB_AUDIO_STARTUP_PREFILL_FRAMES)
 			prefill_frames = USB_AUDIO_STARTUP_PREFILL_FRAMES;
 
-    	if (prefill_frames >= SIZE_AUDIO_RING_FRAMES)
-        	prefill_frames = SIZE_AUDIO_RING_FRAMES - 1u;
+		if (prefill_frames >= SIZE_AUDIO_RING_FRAMES)
+			prefill_frames = SIZE_AUDIO_RING_FRAMES - 1u;
 
-    	if ((uint32_t)level >= prefill_frames)
-    	{
-        	level_stats_reset();
-        	set_state(USB_AUDIO_STREAMING);
-    	}
-    	break;
+		if ((uint32_t)level >= prefill_frames && !enable_output && dma_tx_clock_ready())
+		{
+			level_stats_reset();
+			set_state(USB_AUDIO_STREAMING);
+		}
+		break;
 	}
 
 	case USB_AUDIO_STREAMING:
@@ -1754,6 +1805,7 @@ void usb_sound_card_init(void)
 
 void usb_audio_task(void)
 {
+	static bool startup_audio_released;
 #if USB_BRINGUP_LEVEL == 0
     return;
 #endif
@@ -1798,6 +1850,25 @@ void usb_audio_task(void)
 #if USB_BRINGUP_LEVEL == 1
     return;
 #endif
+
+	if (!startup_audio_released)
+	{
+		const uint16_t available = tud_audio_available();
+		const uint32_t frame_bytes = 2u * bytes_per_sample;
+		if (available != 0u && frame_bytes != 0u)
+		{
+			const uint32_t discarded_frames = available / frame_bytes;
+			stats.drop_idle_frames += discarded_frames;
+			rx_frames_counter += discarded_frames;
+		}
+		tud_audio_clear_ep_out_ff();
+		if (dma_tx_startup_silence_active())
+		{
+			service_feedback();
+			return;
+		}
+		startup_audio_released = true;
+	}
 
     service_dma_fault();
     service_switch();

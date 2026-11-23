@@ -10,7 +10,7 @@
 cmake_minimum_required(VERSION 3.13)
 
 # Compiler Optimization
-add_compile_options(-Ofast -mcpu=cortex-m33 -mfpu=fpv5-sp-d16 -Wall)
+add_compile_options(-O3 -mcpu=cortex-m33 -mfpu=fpv5-sp-d16 -Wall)
 
 # Keep the RP2350 QMI flash clock at clk_sys / 3 from boot stage 2 onward.
 add_compile_definitions(PICO_FLASH_SPI_CLKDIV=3)
@@ -42,8 +42,20 @@ set(PICO_BOARD pico2 CACHE STRING "Board type")
 
 # UAC2 (TUD_AUDIO20_* API) requires a newer TinyUSB. If tinyusb/ exists in the repository root,
 # use it instead of the SDK-bundled version (-DPICO_TINYUSB_PATH=... or an environment variable can also be used).
-if(NOT PICO_TINYUSB_PATH AND NOT DEFINED ENV{PICO_TINYUSB_PATH} AND EXISTS ${CMAKE_CURRENT_LIST_DIR}/tinyusb)
+if(NOT PICO_TINYUSB_PATH AND DEFINED ENV{PICO_TINYUSB_PATH})
+    set(PICO_TINYUSB_PATH $ENV{PICO_TINYUSB_PATH})
+endif()
+if(NOT PICO_TINYUSB_PATH AND EXISTS ${CMAKE_CURRENT_LIST_DIR}/tinyusb/src/class/audio/audio_device.h)
     set(PICO_TINYUSB_PATH ${CMAKE_CURRENT_LIST_DIR}/tinyusb)
+endif()
+if(NOT PICO_TINYUSB_PATH OR NOT EXISTS "${PICO_TINYUSB_PATH}/src/class/audio/audio.h"
+        OR NOT EXISTS "${PICO_TINYUSB_PATH}/src/device/usbd.h")
+    message(FATAL_ERROR "A TinyUSB source tree is required. Set PICO_TINYUSB_PATH to a recent TinyUSB checkout.")
+endif()
+file(STRINGS "${PICO_TINYUSB_PATH}/src/device/usbd.h" TINYUSB_AUDIO20_DESCRIPTOR_MACRO
+        REGEX "#define TUD_AUDIO20_DESC_IAD_LEN")
+if(NOT TINYUSB_AUDIO20_DESCRIPTOR_MACRO)
+    message(FATAL_ERROR "The selected TinyUSB tree lacks the required UAC2 descriptor API (TUD_AUDIO20_DESC_IAD_LEN).")
 endif()
 
 # Pull in Raspberry Pi Pico SDK (must be before project)

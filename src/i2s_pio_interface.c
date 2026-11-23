@@ -8,6 +8,13 @@
 #include "i2s_pio_interface.h"
 #include "common.h"
 
+static void set_i2s_clkdiv(pio_sm_config *sm_config, uint32_t sample_rate)
+{
+	// Use a rounded 16:8 divider independent of the SDK rounding configuration.
+	const uint64_t q8 = ((uint64_t)clock_get_hz(clk_sys) * 2u + sample_rate / 2u) / sample_rate;
+	sm_config_set_clkdiv_int_frac(sm_config, (uint16_t)(q8 >> 8), (uint8_t)q8);
+}
+
 // PIO
 
 // I2S_16bit_program -> 16-bit I2S (primarily for NOS DACs such as the TDA1543).
@@ -29,8 +36,7 @@ void I2S_16bit_program_init(PIO pio, uint sm, uint data_pin, uint sideset_base, 
 	sm_config_set_out_pins(&sm_config, data_pin, 1);
 	sm_config_set_sideset_pins(&sm_config, sideset_base);
 	sm_config_set_out_shift(&sm_config, false, true, 32);
-	float div = (float)clock_get_hz(clk_sys) / (freq << 7u);
-	sm_config_set_clkdiv(&sm_config, div);
+	set_i2s_clkdiv(&sm_config, freq);
 
 	pio_sm_init(pio, sm, offset, &sm_config);
 	pio_sm_set_enabled(pio, sm, true);
@@ -55,8 +61,7 @@ void I2S_32bit_program_init(PIO pio, uint sm, uint data_pin, uint sideset_base, 
 	sm_config_set_out_pins(&sm_config, data_pin, 1);
 	sm_config_set_sideset_pins(&sm_config, sideset_base);
 	sm_config_set_out_shift(&sm_config, false, true, 32);
-	float div = (float)clock_get_hz(clk_sys) / (freq << 7u);
-	sm_config_set_clkdiv(&sm_config, div);
+	set_i2s_clkdiv(&sm_config, freq);
 
 	pio_sm_init(pio, sm, offset, &sm_config);
 	pio_sm_set_enabled(pio, sm, true);
@@ -81,8 +86,7 @@ void I2S_32bit_inv_program_init(PIO pio, uint sm, uint data_pin, uint sideset_ba
 	sm_config_set_out_pins(&sm_config, data_pin, 1);
 	sm_config_set_sideset_pins(&sm_config, sideset_base);
 	sm_config_set_out_shift(&sm_config, false, true, 32);
-	float div = (float)clock_get_hz(clk_sys) / (freq << 7u);
-	sm_config_set_clkdiv(&sm_config, div);
+	set_i2s_clkdiv(&sm_config, freq);
 
 	pio_sm_init(pio, sm, offset, &sm_config);
 	pio_sm_set_enabled(pio, sm, true);
@@ -96,8 +100,7 @@ void I2S_freq_init(PIO pio, uint sm, pio_sm_config *sm_config, uint offset)
 {
 	pio_sm_set_enabled(pio, sm, false);
 
-	float div = (float)clock_get_hz(clk_sys) / (float)(audio_state.freq << 7u);
-	sm_config_set_clkdiv(sm_config, div);
+	set_i2s_clkdiv(sm_config, audio_state.freq);
 	pio_sm_init(pio, sm, offset, sm_config);
 	pio_sm_set_enabled(pio, sm, true);
 }

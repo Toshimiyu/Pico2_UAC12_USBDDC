@@ -61,5 +61,10 @@ void renew_clock(void)
 
 void volume_control(void)
 {
+	if (audio_state.acq_volume <= MIN_VOLUME)
+	{
+		audio_state.vol_float = 0.0f;
+		return;
+	}
 	audio_state.vol_float = saturation_f32(powf(10.0f, (float)audio_state.acq_volume / (float)VOLUME_RESOLUTION / 20.0f), 1.0f, 0.0f);
 }
