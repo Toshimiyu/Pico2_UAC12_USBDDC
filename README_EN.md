@@ -35,6 +35,8 @@ At startup, I²S clocks and zero data are output for 10 seconds, and USB audio r
 
 When PCM runs out, the last sample fades to zero over 64 frames; playback fades in over approximately 5 ms on resumption. If a stream closes during prefill, unplayed data is discarded, and a restart waits for previous DMA output to finish.
 
+When the host closes a playing stream, remaining PCM is faded out over approximately 20 ms after the in-flight DMA block finishes, then output as zeros. If PCM runs out before the fade finishes, the existing silence substitution is used. The CMake option `USB_AUDIO_ENABLE_STOP_FADE` defaults to ON; comparison builds with it OFF append `N` to the version label. Eliminating the click is not guaranteed.
+
 Display features such as the 11-band FFT analyzer, real-time level meters, and buffer water-level monitor have been retained and improved.
 
 ## Supported Environments
@@ -68,7 +70,7 @@ Software oversampling and FIR filtering were removed because the PCM5100A alread
 
 The firmware does not perform oversampling, FIR filtering, or sample-rate conversion, but it always applies a fixed output gain ratio of 0.80 and also applies UAC1/UAC2 host volume settings (0 to -64 dB) and mute in software, changing the PCM sample values.
 
-USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM. Volume changes still take effect immediately. Audio already queued in the ring and DMA is not changed, so the audible response is delayed by the queued audio. PCM underruns also fade the DMA output, but invalid input formats do not trigger automatic mute.
+USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM. Volume changes still take effect immediately. These controls do not change audio already queued in the ring and DMA, so the audible response is delayed by the queued audio. Stream close and PCM underruns also fade the DMA output, but invalid input formats do not trigger automatic mute.
 
 ---
 
@@ -82,6 +84,7 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 - Outputs I²S zero data for 10 seconds at startup and discards USB audio during that period
 - Stops I²S after one second without USB audio data, once queued audio has faded and the DAC zero-detection interval has elapsed; clocks remain active while silent PCM packets arrive, and playback resumes after zero output and normal prefill
 - Adds a 64-frame fade-out when PCM runs out and an approximately 5 ms fade-in on resumption; discards unplayed data when a stream closes during prefill
+- Fades remaining PCM out over approximately 20 ms after a host stream-close request
 - Expands the USB receive FIFO to up to 24 packets and adjusts retention at high watermarks
 - Changes optimization to `-O3` and sets the I²S PIO divider using a rounded 16:8 value
 - Updates firmware labels to `v2.4` for normal builds and `v2.4T` for CDC diagnostic builds. USB `bcdDevice` remains `0x0303` for UAC1 and `0x0313` for UAC2. The DAC analog output waveform during I²S stop/restart has not been measured on hardware.

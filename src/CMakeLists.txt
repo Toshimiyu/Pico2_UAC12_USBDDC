@@ -43,6 +43,7 @@ option(FB_EXPERIMENTAL_LEVEL_SEED "Seed the feedback filter after initial DMA pr
 option(FB_EXPERIMENTAL_ANTI_WINDUP "Use conditional feedback integration" ON)
 option(FB_EXPERIMENTAL_RATE_GAINS "Use sample-rate-scaled feedback gains" ON)
 option(USB_PACKET_TRACE_ENABLE "Capture received USB audio packet lengths in RAM" OFF)
+option(USB_AUDIO_ENABLE_STOP_FADE "Fade queued PCM when the host closes the stream" ON)
 if(USB_PACKET_TRACE_ENABLE AND NOT USB_BRINGUP_LEVEL STREQUAL "3")
         message(FATAL_ERROR "USB_PACKET_TRACE_ENABLE requires USB_BRINGUP_LEVEL=3")
 endif()
@@ -90,6 +91,10 @@ if(NOT USB_AUDIO_ENABLE_OFFSET_SEED)
                 set(PICO_FIRMWARE_VERSION "2.4-tgt2048")
                 set(PICO_FIRMWARE_DISPLAY_VERSION "2.4-tgt2048")
         endif()
+endif()
+if(NOT USB_AUDIO_ENABLE_STOP_FADE)
+        string(APPEND PICO_FIRMWARE_VERSION "N")
+        string(APPEND PICO_FIRMWARE_DISPLAY_VERSION "N")
 endif()
 if(USB_BRINGUP_LEVEL STREQUAL "3")
         string(APPEND PICO_FIRMWARE_VERSION "T")
@@ -163,6 +168,7 @@ target_compile_definitions(Pico2_UAC12_USBDDC PRIVATE
         FB_EXPERIMENTAL_RATE_GAINS=$<BOOL:${FB_EXPERIMENTAL_RATE_GAINS}>
         FB_EXPERIMENTAL_OFFSET_SEED=$<BOOL:${USB_AUDIO_ENABLE_OFFSET_SEED}>
         USB_PACKET_TRACE_ENABLE=$<BOOL:${USB_PACKET_TRACE_ENABLE}>
+        USB_AUDIO_ENABLE_STOP_FADE=$<BOOL:${USB_AUDIO_ENABLE_STOP_FADE}>
         FW_VERSION="${PICO_FIRMWARE_VERSION}"
         FW_DISPLAY_VERSION="${PICO_FIRMWARE_DISPLAY_VERSION}"
         )

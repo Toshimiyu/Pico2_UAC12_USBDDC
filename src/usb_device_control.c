@@ -1000,6 +1000,10 @@ void usb_audio_stream_close(void)
         true,
         false);
 
+#if USB_AUDIO_ENABLE_STOP_FADE
+	const bool fade_on_close = cur_alt != 0u &&
+		(stats.state == USB_AUDIO_STREAMING || stats.state == USB_AUDIO_OVERFLOW_FATAL);
+#endif
 	cur_alt = 0;
 	rate_unsupported = false;
 	// A pending rate change keeps running: it will end in IDLE because cur_alt is 0 now.
@@ -1013,7 +1017,20 @@ void usb_audio_stream_close(void)
 		multicore_lockout_end_blocking();
 	}
 	else if (stats.state != USB_AUDIO_SWITCHING)
+	{
+#if USB_AUDIO_ENABLE_STOP_FADE
+		if (fade_on_close)
+			multicore_lockout_start_blocking();
+#endif
 		set_state(USB_AUDIO_IDLE);
+#if USB_AUDIO_ENABLE_STOP_FADE
+		if (fade_on_close)
+		{
+			dma_tx_request_stop_fade();
+			multicore_lockout_end_blocking();
+		}
+#endif
+	}
 	const uint32_t flushed_frames = fifo_flush_frames(); // FIFO tail the host sent just before alt 0
 	stats.drop_clear_frames += flushed_frames;
 }

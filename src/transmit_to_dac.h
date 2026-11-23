@@ -37,6 +37,9 @@ extern void stop_i2s(void);
 extern void __not_in_flash_func(dma_tx_start)(void);
 extern void dma_stop_and_clear(void);
 extern uint32_t dma_tx_discard_pending(void);
+#if USB_AUDIO_ENABLE_STOP_FADE
+extern void dma_tx_request_stop_fade(void);
+#endif
 extern bool dma_tx_startup_silence_active(void);
 extern bool dma_tx_clock_ready(void);
 extern bool dma_tx_is_silent(void);

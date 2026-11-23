@@ -18,6 +18,9 @@
 #include "i2s_rate.h"
 #include "cdc_diagnostics.h"
 #include "idle_clock.h"
+#if USB_AUDIO_ENABLE_STOP_FADE
+#include "stop_fade.h"
+#endif
 #include <stdatomic.h>
 #include <string.h>
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "DMA fault handling requires lock-free atomic integers");
@@ -84,6 +87,16 @@ static uint32_t dma_fade_in_total;
 static uint32_t dma_fade_in_remaining;
 static volatile int32_t dma_last_pcm_left;
 static volatile int32_t dma_last_pcm_right;
+#if USB_AUDIO_ENABLE_STOP_FADE
+static atomic_bool dma_stop_fade_requested;
+static bool dma_stop_fade_active;
+static mute_ramp_t dma_stop_fade;
+
+void dma_tx_request_stop_fade(void)
+{
+    atomic_store_explicit(&dma_stop_fade_requested, true, memory_order_release);
+}
+#endif
 DMA_TX_STRUCTURE dma_tx;
 
 static void dma_tx_reset(void)
@@ -104,6 +117,10 @@ static void dma_tx_reset(void)
     dma_fade_in_remaining = 0;
     dma_last_pcm_left = 0;
     dma_last_pcm_right = 0;
+#if USB_AUDIO_ENABLE_STOP_FADE
+    atomic_store_explicit(&dma_stop_fade_requested, false, memory_order_relaxed);
+    dma_stop_fade_active = false;
+#endif
 }
 
 volatile bool enable_output = false;
@@ -231,6 +248,20 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
     if (dma_running || atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
         return;
 
+#if USB_AUDIO_ENABLE_STOP_FADE
+    if (atomic_exchange_explicit(&dma_stop_fade_requested, false, memory_order_acq_rel))
+    {
+        stop_fade_reset(&dma_stop_fade, audio_state.freq);
+        dma_stop_fade_active = true;
+        dma_fade_in_remaining = 0;
+    }
+    if (dma_stop_fade_active && usb_audio_get_state() == USB_AUDIO_STREAMING)
+    {
+        dma_stop_fade_active = false;
+        dma_was_silence = true;
+    }
+#endif
+
     uint32_t *buffer;
     uint32_t words;
     if (dma_tx_startup_silence_active() || dma_restart_in_progress)
@@ -254,7 +285,11 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
 
         int32_t *samples = (int32_t *)buffer;
         const uint32_t frames = words / 2u;
-        if (dma_was_silence)
+        if (dma_was_silence
+#if USB_AUDIO_ENABLE_STOP_FADE
+            && !dma_stop_fade_active
+#endif
+            )
         {
             dma_fade_in_total = (audio_state.freq * DMA_START_FADE_MS + 999u) / 1000u;
             if (dma_fade_in_total == 0u)
@@ -271,6 +306,10 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
                 (int32_t)(((int64_t)samples[2u * frame + 1u] * numerator) / dma_fade_in_total);
             dma_fade_in_remaining--;
         }
+#if USB_AUDIO_ENABLE_STOP_FADE
+        if (dma_stop_fade_active)
+            stop_fade_apply(&dma_stop_fade, samples, frames);
+#endif
         dma_last_pcm_left = samples[words - 2u];
         dma_last_pcm_right = samples[words - 1u];
     }
