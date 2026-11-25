@@ -105,11 +105,11 @@
 // DMA block duration used to size the interleaved I2S transfer buffers.
 #define DMA_BLOCK_US (2200)
 
-// Endpoint buffer size (at least 97 is needed for (96+1) kHz * 1 ms).
+// Upper bound for RX_CHUNK_FRAMES in the USB receive path (currently 192 frames).
 #define SIZE_EP_BUFFER (896)
 
 // Audio ring capacity in stereo frames. 4096 frames provides about 21.3 ms of
-// buffering at 192 kHz; the feedback target follows at 75% capacity.
+// buffering at 192 kHz.
 #define SIZE_AUDIO_RING_FRAMES (4096)
 #define TARGET_PREFILL_MS 6
 #define USB_AUDIO_STARTUP_PREFILL_FRAMES (SIZE_AUDIO_RING_FRAMES * 3u / 4u)
@@ -131,9 +131,10 @@
 #define LOOP0_WARN_US (1000)
 #define LOOP1_WARN_US (1000)
 
-// 75% ring threshold for startup/recovery; also the fallback feedback target.
+// 75% ring threshold for startup/recovery and the non-experimental feedback target.
 #define SIZE_BUFFER_FB_THRESHOLD (USB_AUDIO_STARTUP_PREFILL_FRAMES)
 
+// The experimental target is 50%; otherwise feedback uses the 75% threshold.
 #if FB_EXPERIMENTAL_TARGET
 #define FB_TARGET_LEVEL (SIZE_AUDIO_RING_FRAMES / 2u)
 #else
