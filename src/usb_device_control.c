@@ -27,8 +27,11 @@
 #include "usb_audio_class.h"
 #include "common_types.h"
 #include "common.h"
+#include "audio_fade.h"
 #include "mute_ramp.h"
+#include "pcm_silence_fade.h"
 #include "host_rate_window.h"
+#include "audio_wait_timeout.h"
 #if FB_EXPERIMENTAL_LEVEL_SEED
 #include "feedback_level_seed.h"
 #endif
@@ -96,9 +99,12 @@ _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "USB receive tracking requires lock-fr
 #define PCM_CLICK_CANDIDATE_THRESHOLD_Q31 (0x60000000u)
 #define PCM_CLICK_CANDIDATE_MAX_HITS_PER_BLOCK (4u)
 
-// Sample-rate change: how long to wait for the Ring + DMA pool to play out before the stop is forced.
+// The drain timeout starts when the I2S clock is ready, not while clock recovery is in progress.
 // Worst case drain = (Ring 4096 + DMA pool 4 x 243 frames) / 44.1 kHz ~= 115 ms.
 #define SWITCH_DRAIN_TIMEOUT_US (150000u)
+#define BUFFERING_TIMEOUT_US (1000000u)
+#define CLOCK_WAIT_TIMEOUT_US (250000u)
+#define RX_RECENT_TIMEOUT_US (50000u)
 
 // ---- Diagnostic build switches (NEVER ship with FIXED_FEEDBACK_TEST = 1) -------------------------
 // FIXED_FEEDBACK_TEST = 1 : feedback control OFF. The requested rate is fs + FIXED_FEEDBACK_OFFSET_HZ.
@@ -128,6 +134,7 @@ static usb_audio_stats_t stats;
 static volatile uint8_t cur_alt = 0;
 static volatile uint8_t bytes_per_sample = 2;
 static volatile bool rate_unsupported = false;
+static bool audio_suspended;
 static char evt_log[EVT_LOG_N][8];
 static uint32_t evt_time_us[EVT_LOG_N];
 static volatile uint32_t evt_total = 0;
@@ -165,6 +172,7 @@ typedef struct
 } pcm_candidate_history_t;
 
 static pcm_candidate_history_t pcm_candidate_history;
+static pcm_silence_fade_t pcm_silence_fade;
 static mute_ramp_t usb_mute_ramp;
 static void reset_pcm_candidate_history(void);
 
@@ -237,6 +245,7 @@ void tud_suspend_cb(bool remote_wakeup_en)
 
 void tud_resume_cb(void)
 {
+	usb_audio_resume();
 #if USB_CDC_ENABLED
 	usb_audio_record_event('V', 0, 0, 0, true, false);
 #endif
@@ -435,8 +444,18 @@ static bool underflow_snapshot_valid;
 
 // Sample-rate switch sequence (Ver1.2), Core0 only
 static uint32_t pending_freq = 0;	// rate requested by SET_CUR, applied when the output is quiet
-static uint32_t switch_t0_us = 0;	// time the SWITCHING state was entered
+static uint32_t switch_t0_us = 0;	// start of the clock-ready drain interval
+static bool switch_drain_started;
 static uint32_t loop0_prev_us = 0;	// previous usb_audio_task() call (loop-interval diagnostics)
+static audio_wait_timeout_t buffering_wait;
+static audio_wait_timeout_t clock_wait;
+static uint32_t buffering_since_us;
+static bool startup_audio_released;
+static uint32_t startup_audio_released_us;
+static bool buffering_before_startup_release;
+static uint32_t diagnostic_rx_sequence;
+static uint32_t diagnostic_rx_last_us;
+static bool diagnostic_rx_seen;
 
 static uint8_t rx_raw[RX_CHUNK_FRAMES * 8];
 static float ep_Lch[RX_CHUNK_FRAMES];
@@ -620,6 +639,20 @@ static void level_stats_reset(void);
 static void set_state(usb_audio_state_t s)
 {
     const usb_audio_state_t previous_state = stats.state;
+    if (previous_state != s)
+    {
+        buffering_wait = (audio_wait_timeout_t){0};
+        clock_wait = (audio_wait_timeout_t){0};
+        if (s == USB_AUDIO_BUFFERING)
+        {
+            buffering_since_us = time_us_32();
+            buffering_before_startup_release = !startup_audio_released;
+            if (previous_state == USB_AUDIO_STREAMING ||
+                previous_state == USB_AUDIO_OVERFLOW_FATAL ||
+                previous_state == USB_AUDIO_UNDERFLOW_FATAL)
+                stats.rebuffer_count++;
+        }
+    }
 #if FB_EXPERIMENTAL_OFFSET_SEED
     if (previous_state == USB_AUDIO_STREAMING && s != USB_AUDIO_STREAMING)
         feedback_offset_stop(&feedback_offset, time_us_64());
@@ -746,11 +779,15 @@ void usb_audio_reset_diagnostics(void)
 
 	stats.overflow_count = 0;
 	stats.underflow_count = 0;
+	stats.rebuffer_count = 0;
 	stats.fifo_resync_count = 0;
 	stats.rate_limit_violation = 0;
 	stats.switch_count = 0;
 	stats.switch_timeout_count = 0;
 	stats.switch_drain_us = 0;
+	stats.buffering_timeout_count = 0;
+	stats.clock_wait_timeout_count = 0;
+	stats.resume_failure_count = 0;
 	stats.output_stop_count = 0;
 	stats.tail_block_count = 0;
 	stats.drop_ovf_frames = 0;
@@ -867,11 +904,23 @@ void usb_audio_apply_sample_rate(uint32_t new_freq)
 static void service_switch(void)
 {
 	if (stats.state != USB_AUDIO_SWITCHING)
+	{
+		switch_drain_started = false;
 		return;
+	}
 	if (!dma_tx_clock_ready())
+	{
+		switch_drain_started = false;
 		return;
+	}
 
-	const uint32_t waited_us = time_us_32() - switch_t0_us;
+	const uint32_t now_us = time_us_32();
+	if (!switch_drain_started)
+	{
+		switch_t0_us = now_us;
+		switch_drain_started = true;
+	}
+	const uint32_t waited_us = (uint32_t)(now_us - switch_t0_us);
 	const bool quiet = !enable_output && (dma_tx.using == 0);
 	const bool timeout = !quiet && (waited_us >= SWITCH_DRAIN_TIMEOUT_US);
 	if (!quiet && !timeout)
@@ -883,6 +932,13 @@ static void service_switch(void)
 	bool forced = timeout;
 
 	multicore_lockout_start_blocking();
+
+	if (!dma_tx_clock_ready())
+	{
+		switch_drain_started = false;
+		multicore_lockout_end_blocking();
+		return;
+	}
 
 	// Check again with Core1 frozen: it may have (re)started output after the check above.
 	if (enable_output || dma_tx.using != 0)
@@ -929,6 +985,7 @@ static void service_switch(void)
     false);
 
 	set_state((cur_alt != 0 && !rate_unsupported) ? USB_AUDIO_BUFFERING : USB_AUDIO_IDLE);
+	switch_drain_started = false;
 }
 
 //--------------------------------------------------------------------+
@@ -948,6 +1005,7 @@ bool usb_audio_stream_open(uint8_t alt)
     if (!usb_audio_class_get_format(alt, &format))
         return false;
 
+    audio_suspended = false;
     const uint8_t prev_alt = cur_alt;
 
 #if USB_PACKET_TRACE_ENABLE
@@ -1037,16 +1095,36 @@ void usb_audio_stream_close(void)
 
 void usb_audio_suspend(void)
 {
-	cur_alt = 0;
-	rate_unsupported = false;
+	audio_suspended = true;
+	buffering_wait = (audio_wait_timeout_t){0};
+	clock_wait = (audio_wait_timeout_t){0};
 	multicore_lockout_start_blocking();
-	set_state(USB_AUDIO_IDLE);
+	if (stats.state != USB_AUDIO_SWITCHING)
+		set_state(USB_AUDIO_IDLE);
 	clear_audio_buffers();
-	stats.drop_clear_frames += dma_tx_discard_pending();
 	const uint32_t flushed_frames = fifo_flush_frames();
 	stats.drop_clear_frames += flushed_frames;
 	fb_reset();
 	multicore_lockout_end_blocking();
+}
+
+void usb_audio_resume(void)
+{
+	if (!audio_suspended)
+		return;
+	audio_suspended = false;
+	if (cur_alt != 0)
+	{
+		if (!usb_audio_stream_open(cur_alt))
+		{
+			stats.resume_failure_count++;
+			set_state(USB_AUDIO_IDLE);
+		}
+	}
+	else if (stats.state != USB_AUDIO_SWITCHING)
+	{
+		set_state(USB_AUDIO_IDLE);
+	}
 }
 
 void usb_audio_restart_buffering(void)
@@ -1086,6 +1164,7 @@ static inline int32_t rd_s32(const uint8_t *p)
 static void reset_pcm_candidate_history(void)
 {
 	memset(&pcm_candidate_history, 0, sizeof(pcm_candidate_history));
+	pcm_silence_fade_reset(&pcm_silence_fade, audio_state.freq);
 }
 
 static uint32_t __not_in_flash_func(scan_pcm_click_candidate)(const uint8_t *src,
@@ -1341,9 +1420,11 @@ static void service_rx(void)
 		uint8_t threshold_hits;
 		const uint32_t curvature_q31 = scan_pcm_click_candidate(rx_raw, frames, bps,
 																&threshold_hits);
-		if (curvature_q31 >= PCM_CLICK_CANDIDATE_THRESHOLD_Q31 &&
+		const bool click_candidate =
+			curvature_q31 >= PCM_CLICK_CANDIDATE_THRESHOLD_Q31 &&
 			threshold_hits != 0 &&
-			threshold_hits <= PCM_CLICK_CANDIDATE_MAX_HITS_PER_BLOCK)
+			threshold_hits <= PCM_CLICK_CANDIDATE_MAX_HITS_PER_BLOCK;
+		if (click_candidate)
 		{
 			stats.click_candidate_count++;
 			if (curvature_q31 > stats.max_click_curvature_q31)
@@ -1355,17 +1436,26 @@ static void service_rx(void)
 		pcm_to_float(rx_raw, frames, bps, ep_Lch, ep_Rch);
 		const float scale = audio_state.vol_float * DEFAULT_GAIN_RATIO;
 		const bool muted = audio_state.mute;
+		const bool dma_will_fade_in = dma_tx_is_silent();
 		const mute_ramp_t ramp_before = usb_mute_ramp;
 		const float ramp_unit = 1.0f / (float)usb_mute_ramp.frames;
 		for (uint32_t i = 0; i < frames; ++i)
 		{
+			const bool input_silence = ep_Lch[i] == 0.0f && ep_Rch[i] == 0.0f;
+			const uint32_t silence_gain =
+				pcm_silence_fade_next_gain(&pcm_silence_fade, input_silence,
+										   dma_will_fade_in);
 			const uint32_t position = mute_ramp_next(&usb_mute_ramp, muted);
 			const float sample_scale = position == usb_mute_ramp.frames ? scale :
 				(position == 0u ? 0.0f : scale * ((float)position * ramp_unit));
 			ep_Lch[i] *= sample_scale;
 			ep_Rch[i] *= sample_scale;
-			pcm_stereo[2u * i] = (int32_t)ep_Lch[i];
-			pcm_stereo[2u * i + 1u] = (int32_t)ep_Rch[i];
+			int32_t input_left = (int32_t)ep_Lch[i];
+			int32_t input_right = (int32_t)ep_Rch[i];
+			input_left = audio_fade_apply_q16(input_left, silence_gain);
+			input_right = audio_fade_apply_q16(input_right, silence_gain);
+			pcm_stereo[2u * i] = input_left;
+			pcm_stereo[2u * i + 1u] = input_right;
 		}
 
 #if !USB_CDC_ENABLED
@@ -1517,6 +1607,64 @@ static void service_state(void)
 	default:
 		break;
 	}
+}
+
+static void service_wait_diagnostics(void)
+{
+	const uint32_t now = time_us_32();
+	const uint32_t sequence = usb_audio_rx_sequence();
+	if (sequence != diagnostic_rx_sequence)
+	{
+		if (!diagnostic_rx_seen ||
+			(uint32_t)(now - diagnostic_rx_last_us) >= RX_RECENT_TIMEOUT_US)
+			buffering_wait = (audio_wait_timeout_t){0};
+		diagnostic_rx_sequence = sequence;
+		diagnostic_rx_last_us = now;
+		diagnostic_rx_seen = true;
+	}
+
+	const bool receiving = diagnostic_rx_seen &&
+		(uint32_t)(now - diagnostic_rx_last_us) < RX_RECENT_TIMEOUT_US;
+	const bool buffering = !audio_suspended &&
+		stats.state == USB_AUDIO_BUFFERING && receiving;
+	uint32_t restart_since;
+	const bool clock_waiting = !audio_suspended && cur_alt != 0u &&
+		(stats.state == USB_AUDIO_SWITCHING || stats.state == USB_AUDIO_BUFFERING) &&
+		dma_tx_restart_wait_since(&restart_since);
+	if (clock_waiting && (!clock_wait.active || clock_wait.since_us != restart_since))
+	{
+		clock_wait.active = true;
+		clock_wait.reported = false;
+		clock_wait.since_us = restart_since;
+	}
+	if (audio_wait_timeout_update(&buffering_wait, buffering, now, BUFFERING_TIMEOUT_US))
+		stats.buffering_timeout_count++;
+	if (audio_wait_timeout_update(&clock_wait, clock_waiting, time_us_32(), CLOCK_WAIT_TIMEOUT_US))
+		stats.clock_wait_timeout_count++;
+}
+
+uint8_t usb_audio_stuck_waits(void)
+{
+	if (audio_suspended || cur_alt == 0u || !startup_audio_released)
+		return 0u;
+
+	const uint32_t now = time_us_32();
+	const bool buffering = stats.state == USB_AUDIO_BUFFERING;
+	// Startup silence is not part of the prefill wait.
+	const uint32_t buffering_start = buffering_before_startup_release ?
+		startup_audio_released_us : buffering_since_us;
+	uint8_t stuck = 0u;
+	const bool receiving = diagnostic_rx_seen &&
+		(uint32_t)(now - diagnostic_rx_last_us) < RX_RECENT_TIMEOUT_US;
+	if (audio_wait_buffering_stuck(buffering, receiving, &buffering_wait, now,
+								   buffering_start, BUFFERING_TIMEOUT_US))
+		stuck |= USB_AUDIO_STUCK_BUFFERING;
+	uint32_t restart_since;
+	if ((stats.state == USB_AUDIO_SWITCHING || buffering) &&
+		dma_tx_restart_wait_since(&restart_since) &&
+		audio_wait_elapsed(true, time_us_32(), restart_since, CLOCK_WAIT_TIMEOUT_US))
+		stuck |= USB_AUDIO_STUCK_CLOCK;
+	return stuck;
 }
 
 //--------------------------------------------------------------------+
@@ -1822,7 +1970,6 @@ void usb_sound_card_init(void)
 
 void usb_audio_task(void)
 {
-	static bool startup_audio_released;
 #if USB_BRINGUP_LEVEL == 0
     return;
 #endif
@@ -1830,6 +1977,9 @@ void usb_audio_task(void)
     // Loop-interval diagnostics: gap between two calls = everything else Core0 does in main()
     // (SPI drawing, ...) plus the work inside this function
     const uint32_t loop_now_us = time_us_32();
+#if USB_CDC_ENABLED
+    cdc_diagnostics_record_task_gap(loop_now_us, stats.state);
+#endif
     static uint32_t anomaly_loop_prev_us;
     if (stats.state == USB_AUDIO_STREAMING && anomaly_loop_prev_us != 0)
     {
@@ -1884,10 +2034,12 @@ void usb_audio_task(void)
 			service_feedback();
 			return;
 		}
+		startup_audio_released_us = time_us_32();
 		startup_audio_released = true;
 	}
 
     service_dma_fault();
+    service_wait_diagnostics();
     service_switch();
     service_rx();
     service_state();

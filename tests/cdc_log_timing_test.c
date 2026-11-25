@@ -30,5 +30,18 @@ int main(void)
 	missed = 0;
 	if (!cdc_fast_sample_due(500, &next_us, &missed) || next_us != 1500u || missed != 1u)
 		return 8;
+
+	cdc_task_gap_window_t window = {.previous_us = UINT32_MAX - 499u};
+	cdc_task_gap_record(&window, 500u, 2u);
+	if (window.max_gap_us != 1000u || window.over_1ms != 0u || window.state_at_max != 2u)
+		return 9;
+	cdc_task_gap_record(&window, 2001u, 5u);
+	cdc_task_gap_record(&window, 2501u, 0u);
+	if (window.max_gap_us != 1501u || window.over_1ms != 1u || window.state_at_max != 5u)
+		return 10;
+	cdc_task_gap_clear(&window);
+	cdc_task_gap_record(&window, 3702u, 1u);
+	if (window.max_gap_us != 1201u || window.over_1ms != 1u || window.state_at_max != 1u)
+		return 11;
 	return 0;
 }

@@ -26,6 +26,7 @@
 #include "usb_device_control.h"
 #include "usb_audio_config.h"
 #include "diagnostic_window.h"
+#include "diagnostic_stuck.h"
 #if USB_PACKET_TRACE_ENABLE
 #include "usb_audio_class.h"
 #endif
@@ -66,7 +67,7 @@
 #define G_DIAG_COL1_X 248
 #define G_DIAG_ROW0_Y 42
 #define G_DIAG_ROW_STEP 12
-#define G_DIAG_FIELDS 8
+#define G_DIAG_FIELDS 12
 #define G_DIAG_CHARS 5
 
 #define G_LOG_X 12
@@ -348,6 +349,9 @@ static uint8_t reset_status = 0;
 static bool reset_status_pending = false;
 static bool reset_clear_pending = false;
 static uint16_t reset_clear_row = 0;
+static bool stuck_header_visible;
+static uint32_t stuck_char_time_us;
+static uint8_t stuck_char_index;
 
 static display_button_t button_a;
 static display_button_t button_b;
@@ -426,7 +430,7 @@ static void queue_text_at(uint16_t x, uint16_t y, const char *s, int len, uint16
 
 static void draw_log_header(void)
 {
-	q_rect(8, 108, 304, 10, C_BG);
+	q_rect(8, 108, 168, 10, C_BG);
 	queue_text_at(8, 108, history_mode ? "RECENT AUDIO HISTORY" : "USB COMMUNICATION LOG",
 				  history_mode ? 20 : 21, C_LABEL);
 }
@@ -573,6 +577,7 @@ void debug_gauge_init(void)
     last_sample_us = time_us_32();
     last_update_us = last_sample_us;
     level_ema = (float)audio_ring_total_frames();
+    stuck_header_visible = false;
     inited = true;
 }
 
@@ -919,6 +924,8 @@ static void refresh(float level, usb_audio_state_t st)
         const uint32_t vo = d->drop_ovf_frames, vf = d->drop_fifo_frames, vs = d->drop_switch_frames;
         const uint32_t vc = d->drop_clear_frames, vu = d->output_stop_count;
         const uint32_t va = d->loop0_max_us, vb = d->loop1_max_us, vt = d->tail_block_count;
+        const uint32_t buffering_timeout = d->buffering_timeout_count;
+        const uint32_t clock_timeout = d->clock_wait_timeout_count;
         struct
         {
             char label;
@@ -934,6 +941,10 @@ static void refresh(float level, usb_audio_state_t st)
             {'a', va, 4, va > LOOP0_WARN_US ? C_ORANGE : C_LABEL},
             {'b', vb, 4, vb > LOOP1_WARN_US ? C_ORANGE : C_LABEL},
             {'T', vt, 2, vt ? C_ORANGE : C_GREEN},
+            {'B', buffering_timeout, 4, buffering_timeout ? C_RED : C_GREEN},
+            {'K', clock_timeout, 4, clock_timeout ? C_RED : C_GREEN},
+            {'V', d->overflow_count, 4, d->overflow_count ? C_RED : C_GREEN},
+            {'R', d->rebuffer_count, 4, d->rebuffer_count ? C_ORANGE : C_GREEN},
         };
         const uint16_t col_x[] = {G_DIAG_COL0_X, G_DIAG_COL1_X};
 
@@ -949,8 +960,8 @@ static void refresh(float level, usb_audio_state_t st)
                 snprintf(text, sizeof(text), "%c%03lu", fields[field].label, (unsigned long)value);
             else
                 snprintf(text, sizeof(text), "%c%02lu", fields[field].label, (unsigned long)value);
-            const uint16_t x = col_x[field % 2];
-            const uint16_t y = G_DIAG_ROW0_Y + G_DIAG_ROW_STEP * (field / 2);
+            const uint16_t x = field < 10 ? col_x[field % 2] : (uint16_t)(8 + 68 * (field - 10));
+            const uint16_t y = field >= 10 ? 96 : (field >= 8 ? 108 : G_DIAG_ROW0_Y + G_DIAG_ROW_STEP * (field / 2));
 
             for (int i = 0; i < G_DIAG_CHARS; i++)
             {
@@ -1005,6 +1016,39 @@ static bool audio_has_slack(void)
 		return audio_ring_total_frames() >= DISPLAY_MIN_AUDIO_HEADROOM_SAMPLES ||
 			   dma_tx.using >= (DEPTH_DMA_TX_BUFFER / 2);
 	return !enable_output;
+}
+
+static void draw_stuck_character(uint32_t now, uint8_t stuck)
+{
+	if (!stuck_header_visible)
+	{
+		stuck_header_visible = true;
+		stuck_char_index = 0;
+		stuck_char_time_us = now - 1000000u;
+	}
+	if (!diagnostic_stuck_character_due(now, stuck_char_time_us))
+		return;
+
+	const usb_audio_stats_t *stats = usb_audio_get_stats();
+	const uint32_t b = stats->buffering_timeout_count > 9999u ? 9999u :
+		stats->buffering_timeout_count;
+	const uint32_t k = stats->clock_wait_timeout_count > 9999u ? 9999u :
+		stats->clock_wait_timeout_count;
+	char text[22];
+	snprintf(text, sizeof(text), "B%04lu K%04lu %s %c%c",
+		(unsigned long)b, (unsigned long)k, state_text(usb_audio_get_state()),
+		stuck & USB_AUDIO_STUCK_BUFFERING ? 'B' : '-',
+		stuck & USB_AUDIO_STUCK_CLOCK ? 'K' : '-');
+	if (text[stuck_char_index] == '\0')
+		stuck_char_index = 0;
+	if (diagnostic_stuck_can_draw(audio_has_slack(), usb_audio_stuck_waits(),
+								  enable_output, dma_tx_is_silent()) &&
+		usb_audio_stuck_waits() == stuck)
+	{
+		lcd_char(8 + 8 * stuck_char_index, 108, text[stuck_char_index], C_RED, C_BG);
+		stuck_char_index++;
+		stuck_char_time_us = now;
+	}
 }
 
 #define FEEDBACK_PAGE_ROWS 5
@@ -1353,6 +1397,14 @@ void debug_gauge_service(void)
 	level_ema += ((float)audio_ring_total_frames() - level_ema) * alpha;
 	poll_log_buttons(now);
 
+	const bool slack = audio_has_slack();
+	const uint8_t stuck = usb_audio_stuck_waits();
+	if (diagnostic_stuck_can_draw(slack, stuck, enable_output, dma_tx_is_silent()))
+	{
+		draw_stuck_character(now, stuck);
+		return;
+	}
+
 	if (reset_clear_pending)
 	{
 		if (!audio_has_slack())
@@ -1366,7 +1418,12 @@ void debug_gauge_service(void)
 
 	if (q_count == 0)
 	{
-		if (reset_status_pending)
+		if (stuck_header_visible && audio_has_slack())
+		{
+			draw_log_header();
+			stuck_header_visible = false;
+		}
+		else if (reset_status_pending)
 		{
 			queue_reset_status();
 		}

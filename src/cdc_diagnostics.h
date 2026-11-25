@@ -54,6 +54,9 @@ bool cdc_diagnostics_get_trace(uint32_t age, cdc_trace_t *event);
 void cdc_diagnostics_get_trace_summary(cdc_trace_summary_t *summary);
 void cdc_diagnostics_record_lcd_time(uint32_t duration_us);
 void cdc_diagnostics_record_fft_time(uint32_t duration_us);
+#if USB_CDC_ENABLED
+void cdc_diagnostics_record_task_gap(uint32_t now_us, usb_audio_state_t state);
+#endif
 void cdc_diagnostics_task(void);
 #if FB_EXPERIMENTAL_OFFSET_SEED
 void cdc_diagnostics_offset_seed(uint64_t uptime_us, uint32_t rate, bool valid,

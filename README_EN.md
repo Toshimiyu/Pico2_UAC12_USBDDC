@@ -2,6 +2,8 @@
 
 [English](README_EN.md) | [日本語](README.md)
 
+**Current version: v2.5**
+
 ## Description
 
 This project is a major update of `Pico2_UAC2_USBDDC_VerFinal_11FFT_NoOverSampling` for the RP2350 (Raspberry Pi Pico 2).
@@ -29,11 +31,11 @@ Audio processing remains:
 
 Before USB audio data is written to the ring buffer, its PCM sample width (16/24/32-bit) and stereo frame boundaries are checked. If an invalid format or boundary is detected, the TinyUSB OUT FIFO is cleared to resynchronize and the event is recorded in diagnostic counters and, when enabled, the CDC log. The existing state machine continues to operate; in the internal `UNDERFLOW_FATAL` state (shown as `UDF!` in the Diagnostics screen's STATE display), it waits for valid data to accumulate and resumes through the normal rebuffering sequence.
 
-The firmware also measures abrupt changes between adjacent input PCM samples and records threshold crossings as `PCM_CLICK_CANDIDATE`. This diagnostic does not change the audio data or playback gain. Normal high-frequency signals may also be reported, so a candidate does not confirm an audible click.
+The firmware also measures abrupt changes between adjacent input PCM samples and records threshold crossings as `PCM_CLICK_CANDIDATE`. This diagnostic does not change the audio data or playback gain. Normal high-frequency signals may also be reported, so a candidate does not confirm an audible click. When the host continues sending zero-valued PCM, playback fades in over approximately 5 ms after at least 2 ms of silence.
 
-At startup, I²S clocks and zero data are output for 10 seconds, and USB audio received during that period is discarded. Thereafter, if no USB audio data arrives for one second, I²S stops after queued audio has faded and the DAC zero-detection interval has elapsed. Clocks remain active while silent PCM packets continue to arrive. On reception, I²S zero output resumes, followed by playback after the DAC zero-detection interval and normal prefill. This does not guarantee 0 V at the DAC analog output.
+At startup, I²S clocks and zero data are output for 7 seconds, and USB audio received during that period is discarded. Thereafter, if no USB audio data arrives for one second, I²S stops after queued audio has faded and the DAC zero-detection interval has elapsed. Clocks remain active while silent PCM packets continue to arrive. On reception, I²S zero output resumes, followed by playback after the DAC zero-detection interval and normal prefill. This does not guarantee 0 V at the DAC analog output.
 
-When PCM runs out, the last sample fades to zero over 64 frames; playback fades in over approximately 5 ms on resumption. If a stream closes during prefill, unplayed data is discarded, and a restart waits for previous DMA output to finish.
+When PCM runs out, the last sample fades to zero over approximately 5 ms based on the sample rate; DMA output also fades in over approximately 5 ms when resuming from silence. If a stream closes during prefill, unplayed data is discarded, and a restart waits for previous DMA output to finish.
 
 When the host closes a playing stream, remaining PCM is faded out over approximately 20 ms after the in-flight DMA block finishes, then output as zeros. If PCM runs out before the fade finishes, the existing silence substitution is used. The CMake option `USB_AUDIO_ENABLE_STOP_FADE` defaults to ON; comparison builds with it OFF append `N` to the version label. Eliminating the click is not guaranteed.
 
@@ -78,6 +80,17 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 <details>
 <summary>Show version history</summary>
+
+### V2.5
+
+- Changes the PCM-underrun fade-out from 64 frames to approximately 5 ms based on the sample rate
+- Fades in over approximately 5 ms after at least 2 ms of zero PCM while the host continues sending; avoids overlapping the DMA fade-in
+- Records PCM click candidates for diagnostics without changing audio based on a candidate alone
+- Reduces the startup I²S zero-output period from 10 to 7 seconds
+- Retains the Audio Streaming alternate setting across USB suspend and resumes through prefill; starts the rate-switch drain deadline only after the clock is ready
+- Adds diagnostic display counters for prolonged BUFFERING and clock waits, overflows, and rebuffering, as well as CDC timing information. Wait timeouts are diagnostic only
+- Updates firmware labels to `v2.5` for normal builds and `v2.5T` for CDC diagnostic builds; USB `bcdDevice` is unchanged
+- Hardware listening tests are needed to verify whether the fade changes reduce clicks
 
 ### V2.4
 

@@ -42,6 +42,7 @@ typedef struct
 	volatile usb_audio_state_t state;
 	volatile uint32_t overflow_count;
 	volatile uint32_t underflow_count;
+	volatile uint32_t rebuffer_count;
 #if USB_CDC_ENABLED
 	volatile uint32_t underflow_boot_count;
 #endif
@@ -66,6 +67,9 @@ typedef struct
 	volatile uint32_t switch_count;		   // completed sample-rate changes
 	volatile uint32_t switch_timeout_count; // switches whose drain hit SWITCH_DRAIN_TIMEOUT_US and was forced
 	volatile uint32_t switch_drain_us;	   // drain time of the last switch [us]
+	volatile uint32_t buffering_timeout_count;
+	volatile uint32_t clock_wait_timeout_count;
+	volatile uint32_t resume_failure_count;
 
 	// ---- Drop accounting [stereo frames, since boot] ----
 	// Healthy playback: drop_ovf / drop_fifo / output_stop_count / tail_block_count stay 0.
@@ -141,6 +145,10 @@ extern void usb_audio_apply_sample_rate(uint32_t freq); // reconfigure I2S and c
 extern bool usb_audio_stream_open(uint8_t alt);			 // AS interface alternate setting
 extern void usb_audio_stream_close(void);				 // AS interface alt 0 / unmount
 extern void usb_audio_suspend(void);
+extern void usb_audio_resume(void);
+#define USB_AUDIO_STUCK_BUFFERING (1u << 0)
+#define USB_AUDIO_STUCK_CLOCK (1u << 1)
+extern uint8_t usb_audio_stuck_waits(void);
 extern void usb_audio_restart_buffering(void);
 extern void usb_audio_discard_pending_dma(void);
 extern uint32_t usb_audio_rx_sequence(void);

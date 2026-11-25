@@ -5,6 +5,34 @@
 #include <stdint.h>
 #include <string.h>
 
+typedef struct
+{
+	uint32_t previous_us;
+	uint32_t max_gap_us;
+	uint32_t over_1ms;
+	uint32_t state_at_max;
+} cdc_task_gap_window_t;
+
+static inline void cdc_task_gap_record(cdc_task_gap_window_t *window, uint32_t now_us,
+									   uint32_t state)
+{
+	const uint32_t gap = (uint32_t)(now_us - window->previous_us);
+	window->previous_us = now_us;
+	if (gap > window->max_gap_us)
+	{
+		window->max_gap_us = gap;
+		window->state_at_max = state;
+	}
+	if (gap > 1000u)
+		window->over_1ms++;
+}
+
+static inline void cdc_task_gap_clear(cdc_task_gap_window_t *window)
+{
+	window->max_gap_us = 0;
+	window->over_1ms = 0;
+}
+
 static inline bool cdc_fast_sample_due(uint32_t now, uint32_t *next_us, uint32_t *missed)
 {
 	if ((int32_t)(now - *next_us) < 0)

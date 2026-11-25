@@ -18,6 +18,7 @@
 #include "hardware/sync.h"
 #include "hardware/regs/intctrl.h"
 #include "common.h"
+#include "idle_clock.h"
 #include "usb_device_control.h"
 #include "cdc_diagnostics.h"
 #include "transmit_to_dac.h"
@@ -27,6 +28,8 @@
 #include "debug_gauge.h"
 
 #define IDLE_CLEANUP_TIMEOUT_US (500000u)
+_Static_assert(IDLE_CLEANUP_TIMEOUT_US < IDLE_CLOCK_TIMEOUT_US,
+			   "Idle cleanup must precede the I2S idle-clock timeout");
 
 // ring buffer
 RINGBUFFER buffer_audio;

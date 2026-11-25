@@ -18,6 +18,7 @@
 #include "i2s_rate.h"
 #include "cdc_diagnostics.h"
 #include "idle_clock.h"
+#include "audio_fade.h"
 #if USB_AUDIO_ENABLE_STOP_FADE
 #include "stop_fade.h"
 #endif
@@ -53,8 +54,10 @@ static uint offset;
 
 #define DMA_TX_SRAM_BANK_BYTES (64u * 1024u)
 #define DMA_SILENCE_FRAMES (64u)
+#define DMA_EMPTY_FADE_MS (5u)
+#define DMA_EMPTY_FADE_MAX_FRAMES ((192000u * DMA_EMPTY_FADE_MS + 999u) / 1000u)
 #define DMA_START_FADE_MS (5u)
-#define DMA_STARTUP_SILENCE_US (10000000u)
+#define DMA_STARTUP_SILENCE_US (7000000u)
 #define DAC_ZERO_DETECT_FRAMES (1024u)
 #define DAC_ZERO_SETTLE_MARGIN_US (1000u)
 
@@ -71,6 +74,8 @@ static atomic_uint dma_ahb_fault;
 static atomic_bool dma_fault_quiescent;
 static atomic_bool dma_startup_silence = true;
 static atomic_bool dma_clock_ready = true;
+static atomic_uint dma_restart_diagnostic_since_us;
+static atomic_uint dma_restart_generation;
 static volatile bool dma_startup_clock_started;
 static volatile uint32_t dma_startup_silence_since_us;
 static bool dma_idle_clock_stopped;
@@ -80,7 +85,7 @@ static volatile uint32_t dma_restart_since_us;
 static idle_clock_timer_t dma_idle_timer;
 static bool dma_idle_silence_started;
 static uint32_t dma_idle_silence_since_us;
-static uint32_t dma_silence[DMA_SILENCE_FRAMES * 4u];
+static uint32_t dma_silence[DMA_EMPTY_FADE_MAX_FRAMES * 2u];
 static volatile bool dma_was_silence = true;
 static volatile bool dma_fade_out_in_flight;
 static uint32_t dma_fade_in_total;
@@ -222,6 +227,22 @@ bool dma_tx_clock_ready(void)
     return atomic_load_explicit(&dma_clock_ready, memory_order_acquire);
 }
 
+bool dma_tx_restart_wait_since(uint32_t *since_us)
+{
+    if (dma_tx_clock_ready())
+        return false;
+    // The generation publishes the timestamp; clock_ready was already false during idle.
+    const uint32_t generation = atomic_load_explicit(&dma_restart_generation, memory_order_acquire);
+    if ((generation & 1u) == 0u)
+        return false;
+    const uint32_t since = atomic_load_explicit(&dma_restart_diagnostic_since_us, memory_order_relaxed);
+    if (atomic_load_explicit(&dma_restart_generation, memory_order_acquire) != generation ||
+        dma_tx_clock_ready())
+        return false;
+    *since_us = since;
+    return true;
+}
+
 bool dma_tx_is_silent(void)
 {
     return dma_was_silence && !dma_fade_out_in_flight &&
@@ -300,10 +321,9 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         for (uint32_t frame = 0; frame < frames && dma_fade_in_remaining != 0u; frame++)
         {
             const uint32_t numerator = dma_fade_in_total - dma_fade_in_remaining + 1u;
-            samples[2u * frame] =
-                (int32_t)(((int64_t)samples[2u * frame] * numerator) / dma_fade_in_total);
-            samples[2u * frame + 1u] =
-                (int32_t)(((int64_t)samples[2u * frame + 1u] * numerator) / dma_fade_in_total);
+            const uint32_t gain = audio_fade_gain_q16(numerator, dma_fade_in_total);
+            samples[2u * frame] = audio_fade_apply_q16(samples[2u * frame], gain);
+            samples[2u * frame + 1u] = audio_fade_apply_q16(samples[2u * frame + 1u], gain);
             dma_fade_in_remaining--;
         }
 #if USB_AUDIO_ENABLE_STOP_FADE
@@ -319,15 +339,22 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         words = DMA_SILENCE_FRAMES * 2u;
         if (!dma_was_silence)
         {
-            for (uint32_t frame = 0; frame < DMA_SILENCE_FRAMES; frame++)
+            uint32_t fade_frames =
+                (audio_state.freq * DMA_EMPTY_FADE_MS + 999u) / 1000u;
+            if (fade_frames == 0u)
+                fade_frames = 1u;
+            if (fade_frames > DMA_EMPTY_FADE_MAX_FRAMES)
+                fade_frames = DMA_EMPTY_FADE_MAX_FRAMES;
+            for (uint32_t frame = 0; frame < fade_frames; frame++)
             {
-                const int64_t numerator = DMA_SILENCE_FRAMES - frame - 1u;
+                const uint32_t numerator = fade_frames - frame - 1u;
+                const uint32_t gain = audio_fade_gain_q16(numerator, fade_frames);
                 dma_silence[2u * frame] =
-                    (uint32_t)(((int64_t)dma_last_pcm_left * numerator) / DMA_SILENCE_FRAMES);
+                    (uint32_t)audio_fade_apply_q16(dma_last_pcm_left, gain);
                 dma_silence[2u * frame + 1u] =
-                    (uint32_t)(((int64_t)dma_last_pcm_right * numerator) / DMA_SILENCE_FRAMES);
+                    (uint32_t)audio_fade_apply_q16(dma_last_pcm_right, gain);
             }
-            words = DMA_SILENCE_FRAMES * 4u;
+            words = fade_frames * 2u;
             dma_fade_out_in_flight = true;
             dma_last_pcm_left = 0;
             dma_last_pcm_right = 0;
@@ -336,7 +363,7 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         }
         else
         {
-            memset(dma_silence, 0, sizeof(dma_silence));
+            memset(dma_silence, 0, DMA_SILENCE_FRAMES * 2u * sizeof(dma_silence[0]));
         }
 #if USB_CDC_ENABLED
         const usb_audio_state_t state = usb_audio_get_state();
@@ -488,7 +515,9 @@ void __not_in_flash_func(dma_tx_start)(void)
         if (!received && state != USB_AUDIO_SWITCHING)
             return;
         dma_idle_clock_stopped = false;
+        atomic_store_explicit(&dma_restart_diagnostic_since_us, time_us_32(), memory_order_relaxed);
         dma_restart_in_progress = true;
+        atomic_fetch_add_explicit(&dma_restart_generation, 1u, memory_order_release);
         dma_restart_clock_started = false;
         dma_idle_silence_started = false;
         (void)idle_clock_expired(&dma_idle_timer, now_us, rx_sequence, true);
@@ -542,6 +571,7 @@ void __not_in_flash_func(dma_tx_start)(void)
         else if ((uint32_t)(now_us - dma_restart_since_us) >= dma_zero_detect_us())
         {
             dma_restart_in_progress = false;
+            atomic_fetch_add_explicit(&dma_restart_generation, 1u, memory_order_release);
             atomic_store_explicit(&dma_clock_ready, true, memory_order_release);
         }
         if (dma_restart_in_progress)
@@ -563,6 +593,7 @@ void __not_in_flash_func(dma_tx_start)(void)
         dma_idle_silence_started = true;
         dma_idle_silence_since_us = now_us;
     }
+    // main.c's 500 ms ring cleanup must precede the 1 s idle-clock timeout.
     if (quiet && idle_expired && state != USB_AUDIO_SWITCHING &&
         (uint32_t)(now_us - dma_idle_silence_since_us) >= dma_zero_detect_us() &&
         usb_audio_rx_sequence() == rx_sequence)

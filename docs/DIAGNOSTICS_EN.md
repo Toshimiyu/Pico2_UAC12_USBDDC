@@ -210,10 +210,16 @@ The right side of the diagnostic screen displays processing statistics.
 | a | Maximum Core0 processing interval (µs) |
 | b | Maximum Core1 processing interval (µs) |
 | T | DMA tail-block output count |
+| B | BUFFERING waits of at least one second while USB audio is arriving |
+| K | Clock restarts lasting at least 250 ms during rate switching or BUFFERING |
+| V | Overflow detections |
+| R | Returns to BUFFERING from STREAMING or a fault state |
 
-O/F/S/C/U are displayed with four digits and values above 9999 are shown as 9999.
+O/F/S/C/U/B/K/V/R are displayed with four digits and values above 9999 are shown as 9999.
 
-O/F/S/C/U are incremented when their events occur, regardless of the active screen, and show counts accumulated since reset. T counts DMA tail-block output conditions, but is incremented only while diagnostics are enabled and audio is streaming. Periodic measurements such as a/b and buffer levels are also collected while Diagnostics, Feedback Monitor, or the packet capture screen is active, or CDC is connected.
+The current-stall indication is independent of the cumulative counters. BUFFERING is timed only while USB reception continues, and timing restarts after reception pauses. Clock restarts in BUFFERING or SWITCHING are timed from restart initiation; normal idle clock stoppage is not a stall. Startup silence is excluded; BUFFERING that began during startup is timed no earlier than the end of startup silence.
+
+O/F/S/C/U/B/K/V/R are incremented when their events occur, regardless of the active screen, and show counts accumulated since reset. B/K are shown even without CDC, in red when nonzero. Only while a current wait is timed out, output is stopped, and DMA is silent, the log heading is drawn one character per second as `Bxxxx Kxxxx STATE BK` even with low ring headroom. The trailing `B`/`K` indicate the currently stalled wait types, or `-` when absent. Special low-headroom drawing stops when the wait ends; the normal heading returns when normal drawing is permitted. These timeouts are diagnostic only and do not force a stop or automatic recovery. T counts DMA tail-block output conditions, but is incremented only while diagnostics are enabled and audio is streaming. Periodic measurements such as a/b and buffer levels are also collected while Diagnostics, Feedback Monitor, or the packet capture screen is active, or CDC is connected.
 
 For stable operation:
 

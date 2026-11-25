@@ -42,6 +42,7 @@ extern void dma_tx_request_stop_fade(void);
 #endif
 extern bool dma_tx_startup_silence_active(void);
 extern bool dma_tx_clock_ready(void);
+extern bool dma_tx_restart_wait_since(uint32_t *since_us);
 extern bool dma_tx_is_silent(void);
 extern bool dma_tx_fault_pending(void);
 extern uint8_t dma_tx_recover_fault(void);
