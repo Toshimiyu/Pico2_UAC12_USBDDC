@@ -59,7 +59,7 @@ try {
 
 # Validate required tools
 try {
-    Test-RequiredTools @("cmake.exe", "ninja.exe", "arm-none-eabi-size.exe")
+    Test-RequiredTools @("cmake.exe", "ninja.exe", "arm-none-eabi-size.exe", "arm-none-eabi-nm.exe")
 } catch {
     Write-Output "✗ $_"
     exit 1
@@ -203,22 +203,37 @@ if($sizeExitCode -ne 0) {
 
 $sizeOutput | ForEach-Object { Log-Message $_ }
 
-# Parse size for memory summary
+# Report the RAM-backed heap capacity used by malloc, not total RAM minus BSS.
 $lastLine = $sizeOutput | Select-Object -Last 1
 if($lastLine -match '(\d+)\s+(\d+)\s+(\d+)') {
-    [int]$text = $matches[1]
-    [int]$data = $matches[2]
     [int]$bss = $matches[3]
-    
-    $ramTotal = 458752  # 448 KiB
-    $ramPct = [math]::Round(100.0 * $bss / $ramTotal, 1)
-    $ramFree = $ramTotal - $bss
-    
-    Log-Message ""
-    Log-Message "[Memory Summary]"
-    Log-Message "BSS: $bss B ($ramPct% of $ramTotal B)"
-    Log-Message "Free: $ramFree B"
-    Log-Message ""
+
+    $symbolOutput = & arm-none-eabi-nm.exe -n $elfFile.FullName 2>&1
+    $endLine = $symbolOutput | Where-Object { $_ -match '\s__end__$' } | Select-Object -First 1
+    $heapLimitLine = $symbolOutput | Where-Object { $_ -match '\s__HeapLimit$' } | Select-Object -First 1
+    $endMatch = [regex]::Match([string]$endLine, '^\s*([0-9A-Fa-f]+)\s+\w\s+__end__$')
+    $heapLimitMatch = [regex]::Match([string]$heapLimitLine, '^\s*([0-9A-Fa-f]+)\s+\w\s+__HeapLimit$')
+    if($endMatch.Success -and $heapLimitMatch.Success) {
+        $heapStart = [Convert]::ToInt64($endMatch.Groups[1].Value, 16)
+        $heapLimit = [Convert]::ToInt64($heapLimitMatch.Groups[1].Value, 16)
+        $heapAvailable = $heapLimit - $heapStart
+
+        Log-Message ""
+        Log-Message "[Memory Summary]"
+        Log-Message "BSS: $bss B"
+        Log-Message "Heap capacity before allocations: $heapAvailable B"
+        $ringFramesLine = Select-String -Path (Join-Path $repoRoot "src\common.h") `
+            -Pattern '^\s*#define\s+SIZE_AUDIO_RING_FRAMES\s+\(?(\d+)\)?' |
+            Select-Object -First 1
+        if($ringFramesLine -and $ringFramesLine.Matches[0].Groups[1].Success) {
+            $ringBufferBytes = [long]$ringFramesLine.Matches[0].Groups[1].Value * 2 * 4
+            Log-Message "Audio ring-buffer allocation: $ringBufferBytes B"
+            Log-Message "Heap after ring-buffer allocation: $($heapAvailable - $ringBufferBytes) B"
+        }
+        Log-Message ""
+    } else {
+        Log-Message "[Warning] Could not read __end__ and __HeapLimit from ELF"
+    }
 } else {
     Log-Message "[Warning] Could not parse size output"
 }

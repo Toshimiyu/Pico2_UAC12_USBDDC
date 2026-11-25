@@ -1034,7 +1034,7 @@ display_page_t display_rta_get_page(void)
 
 void display_rta_set_page(display_page_t page)
 {
-#if USB_CDC_ENABLED
+#if USB_CDC_ENABLED && !USB_FFT_ENABLED
     if (page == DISPLAY_PAGE_PLAYBACK)
         return;
 #endif

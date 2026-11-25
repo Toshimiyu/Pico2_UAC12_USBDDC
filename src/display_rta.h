@@ -30,7 +30,14 @@ typedef enum
 
 static inline display_page_t display_rta_next_page(display_page_t page)
 {
-#if USB_CDC_ENABLED
+#if USB_CDC_ENABLED && USB_FFT_ENABLED
+	if (page == DISPLAY_PAGE_BOOT)
+		return DISPLAY_PAGE_DIAGNOSTICS;
+	if (page == DISPLAY_PAGE_STARTUP_LOG)
+		return DISPLAY_PAGE_PLAYBACK;
+	if (page == DISPLAY_PAGE_PLAYBACK)
+		return DISPLAY_PAGE_DIAGNOSTICS;
+#elif USB_CDC_ENABLED
 	if (page == DISPLAY_PAGE_BOOT)
 		return DISPLAY_PAGE_DIAGNOSTICS;
 #endif

@@ -91,9 +91,19 @@ foreach($dir in $BuildDirs) {
         [int]$data = $matches[2]
         [int]$bss = $matches[3]
         
-        $ramTotal = 458752  # 448 KiB in bytes
-        $ramPct = [math]::Round(100.0 * $bss / $ramTotal, 1)
-        $ramFree = $ramTotal - $bss
+        $symbolOutput = & "arm-none-eabi-nm.exe" -n $elfFile.FullName 2>&1
+        $endLine = $symbolOutput | Where-Object { $_ -match '\s__end__$' } | Select-Object -First 1
+        $heapLimitLine = $symbolOutput | Where-Object { $_ -match '\s__HeapLimit$' } | Select-Object -First 1
+        $endMatch = [regex]::Match([string]$endLine, '^\s*([0-9A-Fa-f]+)\s+\w\s+__end__$')
+        $heapLimitMatch = [regex]::Match([string]$heapLimitLine, '^\s*([0-9A-Fa-f]+)\s+\w\s+__HeapLimit$')
+        if(!$endMatch.Success -or !$heapLimitMatch.Success) {
+            Write-Output "⚠ $($dir): Could not read __end__ and __HeapLimit from ELF"
+            continue
+        }
+
+        $heapStart = [Convert]::ToInt64($endMatch.Groups[1].Value, 16)
+        $heapLimit = [Convert]::ToInt64($heapLimitMatch.Groups[1].Value, 16)
+        $heapAvailable = $heapLimit - $heapStart
         
         $result = @{
             Directory    = $dir
@@ -104,8 +114,7 @@ foreach($dir in $BuildDirs) {
             Text         = $text
             Data         = $data
             BSS          = $bss
-            RAMPercent   = $ramPct
-            RAMFree      = $ramFree
+            HeapAvailable = $heapAvailable
             ELF          = $elfFile.Name
         }
         $results += $result
@@ -116,7 +125,7 @@ foreach($dir in $BuildDirs) {
         Write-Output "  Features: CDC=$(if($cdcEnabled){'ON'}else{'OFF'}), FFT=$(if($fftEnabled){'ON'}else{'OFF'}), Display=$(if($displayEnabled){'ON'}else{'OFF'})"
         Write-Output "  ELF: $($elfFile.Name)"
         Write-Output "  Memory: text=$text B, data=$data B, bss=$bss B"
-        Write-Output "  RAM: $bss B ($ramPct%) | Free: $ramFree B"
+        Write-Output "  Heap available before allocations: $heapAvailable B"
         Write-Output ""
     } else {
         Write-Output "⚠ $($dir): Failed to parse size output"
@@ -135,12 +144,12 @@ if($results.Count -gt 0) {
     
     # Header row
     $headerDir = "Dir".PadRight($dirColWidth)
-    $headerLine = "$headerDir | Level | CDC | FFT | Display | BSS (B)  | RAM %  | Free (B)"
+    $headerLine = "$headerDir | Level | CDC | FFT | Display | BSS (B)  | Heap Available (B)"
     Write-Output $headerLine
     
     # Separator (dynamic length based on actual header width)
     $dashCount = $dirColWidth
-    $separator = "-" * $dashCount + "|-------|-----|-----|---------|----------|--------|----------"
+    $separator = "-" * $dashCount + "|-------|-----|-----|---------|----------|-------------------"
     Write-Output $separator
     
     # Data rows
@@ -148,10 +157,8 @@ if($results.Count -gt 0) {
         $cdcStr = if($r.CDC){'ON'}else{'OFF'}
         $fftStr = if($r.FFT){'ON'}else{'OFF'}
         $dispStr = if($r.Display){'ON'}else{'OFF'}
-        $ramPctStr = $r.RAMPercent.ToString().PadLeft(5)
-        
         $dirField = $r.Directory.PadRight($dirColWidth)
-        $row = "$dirField | $($r.Level)     | $cdcStr | $fftStr | $dispStr      | $([string]::Format('{0:D8}', $r.BSS)) | $ramPctStr% | $([string]::Format('{0:D8}', $r.RAMFree))"
+        $row = "$dirField | $($r.Level)     | $cdcStr | $fftStr | $dispStr      | $([string]::Format('{0:D8}', $r.BSS)) | $($r.HeapAvailable.ToString().PadLeft(19))"
         Write-Output $row
     }
 }

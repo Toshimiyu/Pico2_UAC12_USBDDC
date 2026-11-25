@@ -16,6 +16,7 @@
 #if USB_FFT_ENABLED
 #define FFT_BINS (FFT_LEN / 2 + 1)
 #define LOW_FFT_LEN 8192
+#define LOW_FFT_WINDOW_HALF_LEN (LOW_FFT_LEN / 2)
 #define LOW_BAND_COUNT 3
 #define LOW_GOERTZEL_BIN_MAX 16
 #define CAPTURE_BUFFERS 2
@@ -52,7 +53,7 @@ static uint8_t low_goertzel_band[LOW_GOERTZEL_BIN_MAX];
 static float low_goertzel_q1[2][LOW_GOERTZEL_BIN_MAX];
 static float low_goertzel_q2[2][LOW_GOERTZEL_BIN_MAX];
 static volatile uint8_t low_goertzel_levels[2][LOW_BAND_COUNT];
-static float low_goertzel_window[LOW_FFT_LEN];
+static float low_goertzel_window[LOW_FFT_WINDOW_HALF_LEN];
 static uint16_t low_goertzel_pos;
 static uint16_t low_goertzel_window_len;
 static uint8_t low_goertzel_window_stride;
@@ -101,6 +102,14 @@ static const float band_edges[SPECTRUM_BAND_COUNT + 1] =
 17900.0f, // Band 10 ( 20kHz) lower bound / Band 9 upper bound.
 22000.0f  // Band 10 ( 20kHz) upper bound.
 };
+
+static inline float low_goertzel_window_at(uint16_t pos, uint8_t stride)
+{
+    uint16_t index = pos * stride;
+    if (index >= LOW_FFT_WINDOW_HALF_LEN)
+        index = LOW_FFT_LEN - 1u - index;
+    return low_goertzel_window[index];
+}
 
 // IEC 61672 A-weighting amplitude gain (approximately 1.0 at 1 kHz).
 static float a_weight_gain(float f)
@@ -191,7 +200,7 @@ for (uint32_t i = 0; i < FFT_LEN; ++i) {
     window[i] = 0.5f - 0.5f * cosf(6.28318530718f * (float)i / (float)(FFT_LEN - 1));
     hann_sum += window[i];
 }
-for (uint32_t i = 0; i < LOW_FFT_LEN; ++i)
+for (uint32_t i = 0; i < LOW_FFT_WINDOW_HALF_LEN; ++i)
     low_goertzel_window[i] = 0.5f - 0.5f * cosf(6.28318530718f * (float)i / (float)(LOW_FFT_LEN - 1));
 const float normalization = 2.0f / hann_sum;
 for (uint8_t rate = 0; rate < SUPPORTED_RATE_COUNT; ++rate)
@@ -232,7 +241,7 @@ if (low_goertzel_enabled) {
     low_goertzel_window_stride = LOW_FFT_LEN / low_goertzel_window_len;
     float low_window_sum = 0.0f;
     for (uint16_t i = 0; i < low_goertzel_window_len; ++i)
-        low_window_sum += low_goertzel_window[i * low_goertzel_window_stride];
+        low_window_sum += low_goertzel_window_at(i, low_goertzel_window_stride);
     const float normalization = 2.0f / low_window_sum;
     const float normalization_power = normalization * normalization;
     const float bin_hz = (float)sample_rate / (float)low_goertzel_window_len;
@@ -259,7 +268,7 @@ return;
 static inline void low_goertzel_feed(float left, float right)
 {
 if (!low_goertzel_enabled) return;
-const float window = low_goertzel_window[low_goertzel_pos * low_goertzel_window_stride];
+const float window = low_goertzel_window_at(low_goertzel_pos, low_goertzel_window_stride);
 const float input[2] = {left * (1.0f / 2147483648.0f) * window, right * (1.0f / 2147483648.0f) * window};
 for (uint8_t channel = 0; channel < 2; ++channel) {
     for (uint8_t bin = 0; bin < low_goertzel_bin_count; ++bin) {

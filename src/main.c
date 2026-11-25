@@ -131,7 +131,7 @@ static void display_service(void)
 			packet_trace_page_init();
 		}
 #endif
-#if !USB_CDC_ENABLED
+#if !USB_CDC_ENABLED || USB_FFT_ENABLED
 		else if (page == DISPLAY_PAGE_PLAYBACK)
 		{
 			display_rta_set_format(audio_state.bit_depth, (float)audio_state.freq / 1000.0f);
@@ -146,7 +146,7 @@ static void display_service(void)
 
 	const display_page_t page = display_rta_get_page();
 
-#if !USB_CDC_ENABLED
+#if !USB_CDC_ENABLED || USB_FFT_ENABLED
 	if (page == DISPLAY_PAGE_PLAYBACK)
 	{
 		display_rta_render_service();

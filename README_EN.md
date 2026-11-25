@@ -303,7 +303,7 @@ Pico2 + Pico Audio Pack (PCM5100A) + Pico Display Pack 2.0
 
 ## Display and Diagnostics
 
-In normal builds, use X to cycle through Boot, Playback, Diagnostics, and Feedback Monitor. CDC-enabled builds (`USB_BRINGUP_LEVEL=3`) disable the FFT display and processing, switch from Boot to Diagnostics after startup, and use X to cycle through Boot, Diagnostics, Feedback Monitor, and Playback Start Log. On the Diagnostics screen, A/B navigate USB event history, A+B toggles audio-state history, and holding Y for 3 seconds resets diagnostic values and USB event history. For screen details, event symbols, and anomaly codes, see the [diagnostic event reference](docs/DIAGNOSTICS_EN.md).
+In normal builds, use X to cycle through Boot, Playback, Diagnostics, and Feedback Monitor. CDC diagnostic builds (`USB_BRINGUP_LEVEL=3`) disable FFT display and processing, switch from Boot to Diagnostics after startup, and use X to cycle through Diagnostics, Feedback Monitor, and Playback Start Log. Level 4 keeps CDC diagnostics and FFT enabled; X cycles through Diagnostics, Feedback Monitor, Playback Start Log, and Playback (FFT display). The Diagnostics screen's Version field identifies the build: Level 3 shows `v2.6T`, while Level 4 shows `v2.6A`, so photos can distinguish them. On the Diagnostics screen, A/B navigate USB event history, A+B toggles audio-state history, and holding Y for 3 seconds resets diagnostic values and USB event history. For screen details, event symbols, and anomaly codes, see the [diagnostic event reference](docs/DIAGNOSTICS_EN.md).
 
 ## Supported Operating Systems
 
