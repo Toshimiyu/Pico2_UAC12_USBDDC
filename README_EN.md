@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | [日本語](README.md)
 
-**Current version: v2.5**
+**Current version: v2.6**
 
 ## Description
 
