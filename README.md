@@ -75,6 +75,16 @@ USBミュート／解除は入力PCMに約5msのリニアなゲインランプ�
 <details>
 <summary>バージョン履歴を表示</summary>
 
+### V2.6
+
+- ビルド・自動化インフラを改善。CMakeCache.txt から USB_BRINGUP_LEVEL を自動読み取る PowerShell スクリプト群を追加
+- 複数のビルドレベル（Level 2: 通常版、Level 3: CDC診断版、Level 4: 高負荷診断版）を一括検証するスクリプトを実装
+- VS Code 用ビルド設定スクリプト `configure-vsc-build.ps1` を追加。cmake コマンドを簡潔に（`-DUSB_AUDIO_CLASS_VERSION=2` のみ）
+- イベントログバッファサイズ（EVT_LOG_N）を条件付きで最適化（CDC有効時 256→128）し、RAM使用量を512B削減
+- ビルドログ管理を `build-logs/` ディレクトリで一元化し、コミット対象に設定
+- ドキュメント `BUILD_CONFIGURATION_FACTS.md`、`SLIMMING_SUMMARY.md`、`DOCUMENT_STATUS.md` を追加し、ビルド構成と最適化方針を明記
+- ビルド・キャプチャスクリプトの重複排除と共通ライブラリ化により、メンテナンス性を向上
+
 ### V2.5
 
 - PCM不足時のフェードアウトを固定64フレームからサンプルレートに応じた約5msに変更
