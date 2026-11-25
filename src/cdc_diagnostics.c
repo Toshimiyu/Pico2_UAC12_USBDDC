@@ -292,12 +292,21 @@ static void service_clock_input(void)
 		{
 			clock_input[clock_input_length] = '\0';
 			uint64_t unix_us;
-			if (!clock_input_overflow && cdc_parse_time_sync(clock_input, &unix_us))
+			const cdc_command_t command = clock_input_overflow
+				? CDC_COMMAND_INVALID : cdc_parse_command(clock_input, &unix_us);
+			if (command == CDC_COMMAND_TIME)
 			{
 				clock_uptime_us = time_us_64();
 				clock_unix_us = unix_us;
 				clock_synced = true;
 				clock_reply_pending = true;
+			}
+			else if (command == CDC_COMMAND_LOG_START)
+			{
+				session_active = false;
+				session_header_pos = 0;
+				if (clock_synced)
+					clock_reply_pending = true;
 			}
 			else
 				clock_error_pending = true;

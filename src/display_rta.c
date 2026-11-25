@@ -266,12 +266,16 @@ typedef struct {
     uint16_t x;
     uint16_t y;
     uint16_t w;
-    uint16_t h;
     uint16_t color;
-    uint16_t bg;
-    uint8_t character;
-    uint8_t scale_y;
-    page_draw_type_t type;
+    union {
+        uint16_t height;
+        struct {
+            uint16_t bg;
+            uint8_t character;
+            uint8_t scale_y;
+        } text;
+    } detail;
+    uint8_t type;
 } page_draw_op_t;
 
 #define PAGE_DRAW_OP_CAPACITY 768
@@ -304,8 +308,8 @@ static void page_draw_enqueue_fill(uint16_t x, uint16_t y, uint16_t w, uint16_t 
                 .x = x + column,
                 .y = y + row,
                 .w = op_w,
-                .h = op_h,
                 .color = color,
+                .detail.height = op_h,
                 .type = PAGE_DRAW_FILL
             };
             column += op_w;
@@ -440,11 +444,8 @@ page_draw_ops[page_draw_count++] = (page_draw_op_t){
     .x = x,
     .y = y,
     .w = width,
-    .h = height,
     .color = color,
-    .bg = bg,
-    .character = (uint8_t)c,
-    .scale_y = scale_y,
+    .detail.text = { .bg = bg, .character = (uint8_t)c, .scale_y = scale_y },
     .type = PAGE_DRAW_CHAR
 };
 return;
@@ -1144,12 +1145,12 @@ bool display_rta_page_service(void)
         const page_draw_op_t op = page_draw_ops[page_draw_pos++];
         if (op.type == PAGE_DRAW_FILL)
         {
-            lcd_fill_rect(op.x, op.y, op.w, op.h, op.color);
+            lcd_fill_rect(op.x, op.y, op.w, op.detail.height, op.color);
         }
         else
         {
-            lcd_draw_char_scaled_width(op.x, op.y, (char)op.character,
-                op.color, op.bg, op.w, op.scale_y);
+            lcd_draw_char_scaled_width(op.x, op.y, (char)op.detail.text.character,
+                op.color, op.detail.text.bg, op.w, op.detail.text.scale_y);
         }
 
         if (page_draw_pos >= page_draw_count)
@@ -1249,7 +1250,7 @@ display_button_action_t display_rta_process_buttons(void)
     return DISPLAY_BUTTON_ACTION_PAGE_CHANGED;
 }
 
-#if !USB_CDC_ENABLED
+#if USB_FFT_ENABLED
 bool display_rta_process_fft_left(void) {
 if (!display_ready || current_page != DISPLAY_PAGE_PLAYBACK) return false;
 

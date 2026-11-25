@@ -65,4 +65,20 @@ static inline bool cdc_parse_time_sync(const char *line, uint64_t *unix_us)
 	return true;
 }
 
+typedef enum
+{
+	CDC_COMMAND_INVALID,
+	CDC_COMMAND_TIME,
+	CDC_COMMAND_LOG_START
+} cdc_command_t;
+
+static inline cdc_command_t cdc_parse_command(const char *line, uint64_t *unix_us)
+{
+	if (strcmp(line, "LOG_START") == 0)
+		return CDC_COMMAND_LOG_START;
+	if (cdc_parse_time_sync(line, unix_us))
+		return CDC_COMMAND_TIME;
+	return CDC_COMMAND_INVALID;
+}
+
 #endif

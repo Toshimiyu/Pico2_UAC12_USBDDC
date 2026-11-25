@@ -6,6 +6,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Source common build utilities (for path resolution)
+$commonBuild = Join-Path $PSScriptRoot "common-build.ps1"
+if (-not (Test-Path -LiteralPath $commonBuild -PathType Leaf)) {
+    throw "Common build library not found: $commonBuild"
+}
+. $commonBuild
+
 $serial = [System.IO.Ports.SerialPort]::new($Port, 115200)
 $serial.DtrEnable = $true
 $serial.ReadTimeout = 250
@@ -14,7 +22,7 @@ $file = $null
 
 try {
     $serial.Open()
-    $outputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
+    $outputPath = Resolve-PathSafe $Output
     $file = [System.IO.File]::Open($outputPath, [System.IO.FileMode]::CreateNew,
         [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
     $unixUs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() * 1000

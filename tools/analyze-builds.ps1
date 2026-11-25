@@ -1,6 +1,13 @@
 #
 # analyze-builds.ps1
 # Purpose: Analyze all build directories and report USB_BRINGUP_LEVEL, features, and memory usage.
+# 
+# Robustness Features:
+# - Excludes build-logs/ automatically (filtered by CMakeCache.txt existence check)
+# - Tolerant of CMakeCache.txt format variations (handles trailing whitespace)
+# - Validates arm-none-eabi-size output before parsing
+# - Flexible column width calculation for variable directory name lengths
+#
 # Usage: .\tools\analyze-builds.ps1 [-BuildDirs @("build-cdc", "build-normal", "build-level4")]
 #
 
@@ -19,13 +26,16 @@ Write-Output "Repo Root: $repoRoot"
 Write-Output ""
 
 # Auto-detect build directories if not specified
+# Note: Automatically excludes build-logs/ and other build-* dirs without CMakeCache.txt
 if($BuildDirs.Count -eq 0) {
-    Write-Output "Auto-detecting build directories..."
-    $BuildDirs = @(Get-ChildItem -Path $repoRoot -Directory -Filter "build-*" | 
+    Write-Output "Auto-detecting build directories with CMakeCache.txt..."
+    $BuildDirs = @(Get-ChildItem -Path $repoRoot -Directory -Filter "build-*" -ErrorAction SilentlyContinue | 
                    Where-Object { Test-Path (Join-Path $_.FullName "CMakeCache.txt") } |
-                   Select-Object -ExpandProperty Name)
+                   Select-Object -ExpandProperty Name | Sort-Object)
     if($BuildDirs.Count -eq 0) {
-        Write-Output "✗ No build directories found"
+        Write-Output "✗ No build directories with CMakeCache.txt found"
+        Write-Output "  (Expected: build-cdc, build-normal, build-level4, etc.)"
+        Write-Output "  (Excluded: build-logs/, CMake caches without CMakeCache.txt)"
         exit 1
     }
 }
@@ -117,13 +127,31 @@ foreach($dir in $BuildDirs) {
 if($results.Count -gt 0) {
     Write-Output "=== Summary Table ==="
     Write-Output ""
-    Write-Output "Dir         | Level | CDC | FFT | Display | BSS (B)  | RAM %  | Free (B)"
-    Write-Output "------------|-------|-----|-----|---------|----------|--------|----------"
     
+    # Calculate column widths dynamically
+    $maxDirLen = ([int]($results | ForEach-Object { $_.Directory.Length } | Measure-Object -Maximum).Maximum)
+    $maxDirLen = [math]::Max($maxDirLen, 11)  # Minimum width for "Dir" header
+    $dirColWidth = $maxDirLen
+    
+    # Header row
+    $headerDir = "Dir".PadRight($dirColWidth)
+    $headerLine = "$headerDir | Level | CDC | FFT | Display | BSS (B)  | RAM %  | Free (B)"
+    Write-Output $headerLine
+    
+    # Separator (dynamic length based on actual header width)
+    $dashCount = $dirColWidth
+    $separator = "-" * $dashCount + "|-------|-----|-----|---------|----------|--------|----------"
+    Write-Output $separator
+    
+    # Data rows
     foreach($r in $results) {
         $cdcStr = if($r.CDC){'ON'}else{'OFF'}
         $fftStr = if($r.FFT){'ON'}else{'OFF'}
         $dispStr = if($r.Display){'ON'}else{'OFF'}
-        Write-Output "$($r.Directory.PadRight(11)) | $($r.Level)     | $cdcStr | $fftStr | $dispStr      | $([string]::Format('{0:D8}', $r.BSS)) | $($r.RAMPercent.ToString().PadLeft(5))% | $([string]::Format('{0:D8}', $r.RAMFree))"
+        $ramPctStr = $r.RAMPercent.ToString().PadLeft(5)
+        
+        $dirField = $r.Directory.PadRight($dirColWidth)
+        $row = "$dirField | $($r.Level)     | $cdcStr | $fftStr | $dispStr      | $([string]::Format('{0:D8}', $r.BSS)) | $ramPctStr% | $([string]::Format('{0:D8}', $r.RAMFree))"
+        Write-Output $row
     }
 }

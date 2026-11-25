@@ -4,22 +4,35 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$OutputDir = '.',
     [ValidatePattern('^[^\\/:*?"<>|\x00-\x1f]+$')]
-    [string]$Prefix = 'cap'
+    [string]$Prefix = 'cap',
+    [long]$LogMaxSizeBytes = (10 * 1MB)  # Rotate log at 10 MB
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Source common build utilities
+$commonBuild = Join-Path $PSScriptRoot "common-build.ps1"
+if (-not (Test-Path -LiteralPath $commonBuild -PathType Leaf)) {
+    throw "Common build library not found: $commonBuild"
+}
+. $commonBuild
+
 $captureScript = Join-Path $PSScriptRoot 'capture_cdc.ps1'
 if (-not (Test-Path -LiteralPath $captureScript -PathType Leaf)) {
     throw "Capture script not found: $captureScript"
 }
 
-$directory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
-[System.IO.Directory]::CreateDirectory($directory) | Out-Null
+$directory = Resolve-PathSafe $OutputDir
+New-LogDirectory $directory
 $eventLog = Join-Path $directory 'capture_events.log'
 $encoding = [System.Text.UTF8Encoding]::new($false)
 
 function Write-CaptureEvent {
     param([string]$Event, [string]$Detail)
+    
+    # Rotate log if needed
+    Rotate-LogFile $eventLog -MaxSizeBytes $LogMaxSizeBytes | Out-Null
+    
     $timestamp = [DateTimeOffset]::Now.ToString('yyyy-MM-ddTHH:mm:ss.fffzzz')
     $detailLine = $Detail -replace '[\r\n]+', ' '
     $line = "$timestamp $Event $detailLine"

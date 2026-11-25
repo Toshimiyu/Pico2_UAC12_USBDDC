@@ -86,7 +86,7 @@ _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "USB receive tracking requires lock-fr
 #define FB_TRANSIENT_GAIN_START (0.25f)
 #define FB_TRANSIENT_GAIN_SPAN (0.75f)
 #if USB_CDC_ENABLED
-#define EVT_LOG_N 256
+#define EVT_LOG_N 128  // Reduced from 256 for memory efficiency (RAM optimization P1)
 #else
 #define EVT_LOG_N 64
 #endif
@@ -1255,7 +1255,7 @@ static void __not_in_flash_func(pcm_to_float)(const uint8_t *src, uint32_t frame
 	}
 }
 
-#if !USB_CDC_ENABLED
+#if USB_FFT_ENABLED
 static void report_peak(const float *left, const float *right, uint32_t frames)
 {
 	float peak_l = 0.0f, peak_r = 0.0f;
@@ -1458,7 +1458,7 @@ static void service_rx(void)
 			pcm_stereo[2u * i + 1u] = input_right;
 		}
 
-#if !USB_CDC_ENABLED
+#if USB_FFT_ENABLED
 		report_peak(ep_Lch, ep_Rch, frames);
 		spectrum_feed_block(ep_Lch, ep_Rch, frames);
 #endif

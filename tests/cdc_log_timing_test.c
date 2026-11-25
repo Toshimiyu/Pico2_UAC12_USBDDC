@@ -16,6 +16,14 @@ int main(void)
 		if (cdc_parse_time_sync(invalid[i], &value))
 			return 3;
 
+	if (cdc_parse_command("LOG_START", &value) != CDC_COMMAND_LOG_START ||
+		cdc_parse_command("LOG_START,1", &value) != CDC_COMMAND_INVALID ||
+		cdc_parse_command("log_start", &value) != CDC_COMMAND_INVALID ||
+		cdc_parse_command("TIME,1760000000123000", &value) != CDC_COMMAND_TIME ||
+		value != 1760000000123000ull ||
+		cdc_parse_command("TIME,0", &value) != CDC_COMMAND_INVALID)
+		return 12;
+
 	uint32_t next_us = 0;
 	uint32_t missed = 0;
 	if (!cdc_fast_sample_due(0, &next_us, &missed) || next_us != 1000u || missed != 0u)

@@ -280,8 +280,7 @@ int main(void)
 	// Start Core1, which handles I2S output.
 	multicore_launch_core1(core1_main);
 
-
-#if !USB_CDC_ENABLED
+#if USB_FFT_ENABLED
 	spectrum_init();
 	spectrum_set_sample_rate(audio_state.freq);
 #endif

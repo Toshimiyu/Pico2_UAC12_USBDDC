@@ -1,0 +1,46 @@
+=== Build Summary ===
+Timestamp: 2026-11-25 22:05:23
+USB_BRINGUP_LEVEL: 2
+Output Directory: test-build-l2
+Working Directory: C:\Users\toshi\Pico2_UAC12_USBDDC
+
+
+[Build Configuration]
+Level: 2
+CDC: OFF
+FFT: ON
+Display: ON
+
+[CMake Configuration]
+Command: cmake -S . -B test-build-l2 -G Ninja -DUSB_AUDIO_CLASS_VERSION=2 -DUSB_BRINGUP_LEVEL=2
+
+[CMake Error]
+PICO_SDK_PATH is C:/Users/toshi/.pico-sdk/sdk/2.3.1
+Target board (PICO_BOARD) is 'pico2'.
+Using board configuration from C:/Users/toshi/.pico-sdk/sdk/2.3.1/src/boards/include/boards/pico2.h
+Auto-converting non-specific PICO_PLATFORM='rp2350' to 'rp2350-arm-s'
+Defaulting platform (PICO_PLATFORM) to 'rp2350-arm-s' based on PICO_BOARD setting.
+-- Defaulting build type to 'Release' since not specified.
+Detected GCC so defaulting PICO_COMPILER to `pico_arm_cortex_m33_gcc`
+Configuring toolchain based on PICO_COMPILER 'pico_arm_cortex_m33_gcc'
+Defaulting PICO_GCC_TRIPLE to 'arm-none-eabi'
+-- The C compiler identification is GNU 15.2.1
+-- The CXX compiler identification is GNU 15.2.1
+-- The ASM compiler identification is GNU
+-- Found assembler: C:/Users/toshi/.pico-sdk/toolchain/15_2_Rel1/bin/arm-none-eabi-gcc.exe
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: C:/Users/toshi/.pico-sdk/toolchain/15_2_Rel1/bin/arm-none-eabi-gcc.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Users/toshi/.pico-sdk/toolchain/15_2_Rel1/bin/arm-none-eabi-g++.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+CMake Error at CMakeLists.txt:74 (message):
+  USB_BRINGUP_LEVEL must be 0, 1, 2, 3, or 4
+
+
+-- Configuring incomplete, errors occurred!
+✗ CMake configuration failed (exit code: 1)

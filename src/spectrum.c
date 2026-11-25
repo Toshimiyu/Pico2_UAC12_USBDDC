@@ -13,7 +13,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
-#if !USB_CDC_ENABLED
+#if USB_FFT_ENABLED
 #define FFT_BINS (FFT_LEN / 2 + 1)
 #define LOW_FFT_LEN 8192
 #define LOW_BAND_COUNT 3

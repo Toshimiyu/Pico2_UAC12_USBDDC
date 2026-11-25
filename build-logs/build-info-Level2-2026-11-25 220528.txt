@@ -1,0 +1,20 @@
+=== Build Summary ===
+Timestamp: 2026-11-25 22:05:28
+USB_BRINGUP_LEVEL: 2
+Output Directory: test-build-l2
+Working Directory: C:\Users\toshi\Pico2_UAC12_USBDDC\build-logs
+
+
+[Build Configuration]
+Level: 2
+CDC: OFF
+FFT: ON
+Display: ON
+
+[CMake Configuration]
+Command: cmake -S . -B test-build-l2 -G Ninja -DUSB_AUDIO_CLASS_VERSION=2 -DUSB_BRINGUP_LEVEL=2
+
+[CMake Error]
+CMake Error: The source directory "C:/Users/toshi/Pico2_UAC12_USBDDC/build-logs" does not appear to contain CMakeLists.txt.
+Specify --help for usage, or press the help button on the CMake GUI.
+✗ CMake configuration failed (exit code: 1)

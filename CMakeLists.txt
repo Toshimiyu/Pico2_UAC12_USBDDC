@@ -66,11 +66,12 @@ project(Pico2_UAC12_USBDDC C CXX ASM)
 
 # USB bring-up mode:
 # 0 = USB off, 1 = TinyUSB enumeration only without CDC,
-# 2 = full audio without CDC, 3 = full audio with CDC.
-set(USB_BRINGUP_LEVEL "2" CACHE STRING "USB startup mode (0, 1, 2, or 3)")
-set_property(CACHE USB_BRINGUP_LEVEL PROPERTY STRINGS 0 1 2 3)
-if(NOT USB_BRINGUP_LEVEL MATCHES "^[0-3]$")
-    message(FATAL_ERROR "USB_BRINGUP_LEVEL must be 0, 1, 2, or 3")
+# 2 = full audio without CDC, 3 = full audio with CDC,
+# 4 = full audio with CDC and FFT (maximum load for diagnostics).
+set(USB_BRINGUP_LEVEL "2" CACHE STRING "USB startup mode (0, 1, 2, 3, or 4)")
+set_property(CACHE USB_BRINGUP_LEVEL PROPERTY STRINGS 0 1 2 3 4)
+if(NOT USB_BRINGUP_LEVEL MATCHES "^[0-4]$")
+    message(FATAL_ERROR "USB_BRINGUP_LEVEL must be 0, 1, 2, 3, or 4")
 endif()
 
 # --- Generate the current build date and time as a string ---

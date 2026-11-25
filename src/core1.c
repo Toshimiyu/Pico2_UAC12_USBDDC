@@ -36,7 +36,7 @@ void core1_main()
 	{
 		if(TEST_MODE) gpio_put(TEST_PIN2, true);
 		dma_tx_start();
-#if !USB_CDC_ENABLED
+#if USB_FFT_ENABLED
 		// FFT calculation only; all blocking TFT writes are serviced by Core0.
 		// One channel per step, with a DMA service in between, so the DMA chain is never left
 		// unattended for a whole two-channel FFT.
