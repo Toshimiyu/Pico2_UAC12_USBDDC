@@ -1,2 +1,6 @@
 build
 !.vscode/*
+# Build output directories (but not build-logs/)
+/build-*/
+!build-logs/
+
