@@ -63,7 +63,7 @@ static void boot_wait_ms(uint32_t ms)
 }
 
 
-#if !USB_CDC_ENABLED
+#if !USB_CDC_ENABLED || USB_FFT_ENABLED
 static uint32_t last_display_freq = 0;
 static uint8_t last_display_bit_depth = 0;
 #endif
@@ -330,7 +330,7 @@ int main(void)
 
 		sleep_us(1);
 
-#if !USB_CDC_ENABLED
+#if !USB_CDC_ENABLED || USB_FFT_ENABLED
 		// Update the display when the USB audio format (sample rate / bit depth) changes.
     	if (audio_state.freq != last_display_freq || audio_state.bit_depth != last_display_bit_depth)
     	{
@@ -339,7 +339,6 @@ int main(void)
         
         // Update the displayed sample rate and bit depth.
         display_rta_set_format(audio_state.bit_depth, (float)audio_state.freq / 1000.0f);
-        spectrum_set_sample_rate(audio_state.freq);
     	}
 
 	    // Monitor input inactivity on Core0; reset drawing is queued for the render service below.

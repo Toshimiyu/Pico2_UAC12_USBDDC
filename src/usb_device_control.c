@@ -46,6 +46,7 @@
 #endif
 #include "ringbuffer.h"
 #include "display_rta.h"
+#include "spectrum.h"
 #include "transmit_to_dac.h"
 
 extern uint32_t now_playing;
@@ -952,6 +953,9 @@ static void service_switch(void)
 	{
 		audio_state.freq = pending_freq;
 		renew_clock();
+#if USB_FFT_ENABLED
+		spectrum_set_sample_rate(audio_state.freq);
+#endif
 	}
 	clear_audio_buffers();
 	const uint32_t flushed_frames = fifo_flush_frames();

@@ -45,7 +45,7 @@ static const uint32_t supported_rates[SUPPORTED_RATE_COUNT] = {
 44100u, 48000u, 88200u, 96000u, 176400u, 192000u
 };
 
-// At 176.4/192 kHz, a 1024-point FFT cannot resolve the first few bands.
+// At 88.2 kHz and above, the first few bands need a longer analysis window.
 // Track the first three bands by summing their Goertzel-bin powers over a longer window.
 static float low_goertzel_coeff[LOW_GOERTZEL_BIN_MAX];
 static float low_goertzel_gain[LOW_GOERTZEL_BIN_MAX];
@@ -85,8 +85,8 @@ static int8_t processing_index = -1;
 static uint8_t processing_rate; // rate tables latched at the start of a frame (left and right use the same)
 static uint8_t active_rate_index = 0;
 
-// Boundaries are the geometric means of adjacent centers, yielding 11 ISO 1/1-octave bands
-// centered at 63, 125, 250, 500, 1k, 2k, 4k, 8k, 12k, 16k, and 20k Hz.
+// Band boundaries for the nominal centers 63, 125, 250, 500, 1k, 2k, 4k,
+// 8k, 12k, 16k, and 20k Hz.
 static const float band_edges[SPECTRUM_BAND_COUNT + 1] =
 {
 45.0f,    // Band 0  ( 63Hz) lower bound.
@@ -228,6 +228,13 @@ void spectrum_set_sample_rate(uint32_t sample_rate)
 {
 for (uint8_t rate = 0; rate < SUPPORTED_RATE_COUNT; ++rate) {
 if (sample_rate == supported_rates[rate]) {
+// The caller pauses Core1 during rate changes. Drop incomplete and queued
+// frames so samples captured at the old rate are not analyzed at the new rate.
+if (ready_index >= 0) {
+    state[(uint8_t)ready_index] = BUFFER_FREE;
+    ready_index = -1;
+}
+if (state[fill_index] == BUFFER_FILLING) capture_pos = 0;
 active_rate_index = rate;
 low_goertzel_enabled = rate >= 2;
 low_goertzel_pos = 0;

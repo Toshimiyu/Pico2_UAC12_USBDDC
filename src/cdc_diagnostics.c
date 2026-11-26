@@ -18,7 +18,13 @@
 #if USB_CDC_ENABLED
 
 #define CDC_LOG_PERIOD_US 100000u
+#define CDC_LOG_FORCE_PERIOD_US 1000000u
+#define CDC_FAST_FORCE_PERIOD_US 500000u
 #define CDC_RING_AVERAGE_PERIOD_US 1000u
+#define CDC_LOG_CHANGE_THRESHOLD_HOST_HZ 50u
+#define CDC_LOG_CHANGE_THRESHOLD_FB_HZ 50u
+#define CDC_LOG_CHANGE_THRESHOLD_RING_FRAMES 200u
+#define CDC_FAST_CHANGE_THRESHOLD_RING_FRAMES 200u
 #define CDC_EVENT_QUEUE_SIZE 16u
 #define CDC_TRACE_QUEUE_SIZE 128u
 #define CDC_TRACE_HISTORY_SIZE 128u
@@ -93,9 +99,17 @@ static volatile bool session_active;
 static uint32_t session_start_us;
 static uint64_t session_start_uptime_us;
 static uint32_t next_sample_us;
+static uint32_t next_force_sample_us;
 static uint32_t next_fast_us;
 static uint32_t fast_missed;
 static uint32_t fast_dropped;
+static uint32_t next_fast_force_us;
+static int32_t  last_fast_ring_level;
+static uint32_t last_fast_feedback;
+static uint32_t last_fast_integral;
+static uint32_t last_fast_out_age;
+static uint32_t fast_ring_change_sum;
+static uint32_t fast_ring_change_count;
 static uint64_t clock_unix_us;
 static uint64_t clock_uptime_us;
 static bool clock_synced;
@@ -108,6 +122,11 @@ static uint32_t next_ring_average_us;
 static uint64_t ring_average_sum;
 static uint32_t ring_average_count;
 static int32_t ring_min;
+static uint32_t last_host_rate_hz;
+static uint32_t last_feedback_rate_hz;
+static int32_t last_ring_level;
+static uint32_t last_underflow_count;
+static usb_audio_state_t last_state;
 static int32_t ring_max;
 static uint32_t max_hf_diff_session;
 static uint32_t session_switch_start;
@@ -343,6 +362,41 @@ static void write_clock_reply(void)
 	}
 }
 
+static bool should_write_fast_sample(uint32_t now, int32_t ring_level)
+{
+	// Force output if forced interval expired
+	if ((int32_t)(now - next_fast_force_us) >= 0)
+	{
+		next_fast_force_us = now + CDC_FAST_FORCE_PERIOD_US;
+		return true;
+	}
+
+	// Check for significant ring level changes (threshold: 200 frames)
+	if (last_fast_ring_level >= 0)
+	{
+		const int32_t level_delta = ring_level > last_fast_ring_level
+			? ring_level - last_fast_ring_level
+			: last_fast_ring_level - ring_level;
+		
+		// Update running average for learning
+		if (level_delta > 0 && level_delta < 1000)
+		{
+			fast_ring_change_sum += level_delta;
+			fast_ring_change_count++;
+		}
+		
+		// Record if change exceeds threshold
+		if (level_delta > CDC_FAST_CHANGE_THRESHOLD_RING_FRAMES)
+		{
+			last_fast_ring_level = ring_level;
+			return true;
+		}
+	}
+	last_fast_ring_level = ring_level;
+
+	return false;
+}
+
 static void write_fast_sample(uint64_t uptime_us)
 {
 	const uint32_t now = (uint32_t)uptime_us;
@@ -351,13 +405,21 @@ static void write_fast_sample(uint64_t uptime_us)
 
 	const usb_audio_state_t state = usb_audio_get_state();
 	const usb_audio_stats_t *stats = usb_audio_get_stats();
+	const int32_t ring_level = (int32_t)audio_ring_total_frames();
 	const uint32_t feedback = (state == USB_AUDIO_IDLE || state == USB_AUDIO_SWITCHING)
 		? 0u : (uint32_t)((double)stats->feedback_hz * 65.536 + 0.5);
 	const int32_t level_tenths = (int32_t)(usb_audio_get_feedback_level() * 10.0f + 0.5f);
 	const int32_t integral_millihz = (int32_t)(usb_audio_get_feedback_integrator_hz() * 1000.0f);
-	uint32_t out_age_us;
+	uint32_t out_age_us = 0;
+	if (!usb_audio_get_out_age_us(&out_age_us))
+		out_age_us = 0;
+
+	// Check if we should output this sample based on ring level changes
+	if (!should_write_fast_sample(now, ring_level))
+		return;
+
 	char age[16] = "";
-	if (usb_audio_get_out_age_us(&out_age_us))
+	if (out_age_us > 0)
 		snprintf(age, sizeof(age), "%lu", (unsigned long)out_age_us);
 	char unix_time[24] = "";
 	if (clock_synced)
@@ -377,9 +439,9 @@ static void write_fast_sample(uint64_t uptime_us)
 
 	char line[256];
 	const int length = snprintf(line, sizeof(line),
-		"FAST,%llu,%s,%u,%lu,%ld,%lu,%ld,%s,%lu,%lu,%s\r\n",
+		"FAST,%llu,%s,%u,%ld,%ld,%lu,%ld,%s,%lu,%lu,%s\r\n",
 		(unsigned long long)uptime_us, unix_time, (unsigned)state,
-		(unsigned long)audio_ring_total_frames(), (long)level_tenths,
+		(long)ring_level, (long)level_tenths,
 		(unsigned long)feedback, (long)integral_millihz, age,
 		(unsigned long)fast_missed, (unsigned long)fast_dropped, diag_fields);
 	if (length < 0 || (size_t)length >= sizeof(line) || !cdc_write(line, (uint32_t)length))
@@ -636,9 +698,14 @@ static bool start_session(void)
 	sample_interval_start_us = now;
 	sample_rx_sequence = usb_audio_rx_sequence();
 	next_sample_us = now;
+	next_force_sample_us = now + CDC_LOG_FORCE_PERIOD_US;
 	next_fast_us = now;
 	fast_missed = 0;
 	fast_dropped = 0;
+	next_fast_force_us = now + 500000u;
+	last_fast_ring_level = -1;
+	fast_ring_change_sum = 0;
+	fast_ring_change_count = 0;
 	next_ring_average_us = now;
 	ring_average_sum = 0;
 	ring_average_count = 0;
@@ -653,6 +720,11 @@ static bool start_session(void)
 	const uint32_t fft_owner = spin_lock_blocking(event_lock);
 	memset(&fft_timing, 0, sizeof(fft_timing));
 	spin_unlock(event_lock, fft_owner);
+	last_host_rate_hz = 0;
+	last_feedback_rate_hz = 0;
+	last_ring_level = -1;
+	last_underflow_count = 0;
+	last_state = USB_AUDIO_IDLE;
 	session_active = true;
 	cdc_diagnostics_log_state_change(USB_AUDIO_IDLE, usb_audio_get_state(), true);
 	return true;
@@ -682,6 +754,78 @@ static void sample_ring_level(uint32_t now)
 		if (difference > max_hf_diff_session)
 			max_hf_diff_session = difference;
 	}
+}
+
+static bool should_write_sample(uint32_t now, uint32_t host_rate, uint32_t feedback_rate)
+{
+	const int32_t level = (int32_t)audio_ring_total_frames();
+	const usb_audio_state_t state = usb_audio_get_state();
+	const usb_audio_stats_t *stats = usb_audio_get_stats();
+
+	// Force output if forced interval expired
+	if ((int32_t)(now - next_force_sample_us) >= 0)
+	{
+		next_force_sample_us = now + CDC_LOG_FORCE_PERIOD_US;
+		return true;
+	}
+
+	// Check for significant rate changes
+	if (last_host_rate_hz != host_rate)
+	{
+		const uint32_t rate_delta = host_rate > last_host_rate_hz
+			? host_rate - last_host_rate_hz
+			: last_host_rate_hz - host_rate;
+		if (rate_delta > CDC_LOG_CHANGE_THRESHOLD_HOST_HZ)
+		{
+			last_host_rate_hz = host_rate;
+			return true;
+		}
+		last_host_rate_hz = host_rate;
+	}
+
+	if (last_feedback_rate_hz != feedback_rate)
+	{
+		const uint32_t rate_delta = feedback_rate > last_feedback_rate_hz
+			? feedback_rate - last_feedback_rate_hz
+			: last_feedback_rate_hz - feedback_rate;
+		if (rate_delta > CDC_LOG_CHANGE_THRESHOLD_FB_HZ)
+		{
+			last_feedback_rate_hz = feedback_rate;
+			return true;
+		}
+		last_feedback_rate_hz = feedback_rate;
+	}
+
+	// Check for significant ring level changes
+	if (last_ring_level >= 0)
+	{
+		const uint32_t level_now = level > 0 ? (uint32_t)level : 0u;
+		const int32_t level_delta = level_now > (uint32_t)last_ring_level
+			? (int32_t)(level_now - (uint32_t)last_ring_level)
+			: (int32_t)((uint32_t)last_ring_level - level_now);
+		if (level_delta > CDC_LOG_CHANGE_THRESHOLD_RING_FRAMES)
+		{
+			last_ring_level = level;
+			return true;
+		}
+	}
+	last_ring_level = level;
+
+	// Check for underflow changes
+	if (last_underflow_count != stats->underflow_boot_count)
+	{
+		last_underflow_count = stats->underflow_boot_count;
+		return true;
+	}
+
+	// Check for state changes
+	if (last_state != state)
+	{
+		last_state = state;
+		return true;
+	}
+
+	return false;
 }
 
 static bool write_sample(uint32_t now)
@@ -821,7 +965,6 @@ static bool write_sample(uint32_t now)
 	ring_max = (int32_t)ring_used_now;
 	ring_average_sum = 0;
 	ring_average_count = 0;
-	next_sample_us = now + CDC_LOG_PERIOD_US;
 	return true;
 
 failed:
@@ -835,7 +978,6 @@ failed:
 	if (fft_timing.max_us < saved_fft_timing.max_us)
 		fft_timing.max_us = saved_fft_timing.max_us;
 	spin_unlock(event_lock, restore_owner);
-	next_sample_us = now + CDC_LOG_PERIOD_US;
 	return false;
 }
 
@@ -1136,11 +1278,17 @@ void cdc_diagnostics_task(void)
 	sample_ring_level(now);
 	if ((int32_t)(now - next_sample_us) >= 0)
 	{
-		if (!write_sample(now))
+		const uint32_t host_rate = usb_audio_get_host_rate_hz();
+		const uint32_t feedback_rate = usb_audio_get_feedback_hz();
+		if (should_write_sample(now, host_rate, feedback_rate))
 		{
-			row_drop_count++;
-			row_drop_total++;
+			if (!write_sample(now))
+			{
+				row_drop_count++;
+				row_drop_total++;
+			}
 		}
+		next_sample_us = now + CDC_LOG_PERIOD_US;
 	}
 	write_pending_anomalies(now);
 #if FB_EXPERIMENTAL_OFFSET_SEED
