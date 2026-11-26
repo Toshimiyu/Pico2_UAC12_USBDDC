@@ -6,9 +6,52 @@
 
 At `USB_BRINGUP_LEVEL=3`, the diagnostic screen follows the boot screen; the playback screen and FFT processing are disabled. `FFT_STATIC_BYTES` and FFT timing statistics are zero. Audio playback and the Playback Start Log screen remain available.
 
+> **✅ Hardware Test on Windows 11 26H2 (UAC2 mode)**  
+> From v2.7 onwards, testing with the implemented change-detection logic confirms that no noise has been detected in Windows 11 26H2 environments running in UAC2 mode. Long-duration log capture (15.8 minutes) also confirms that log-size reduction (98.8%) and preservation of diagnostic information work together effectively.
+
 Logging still starts automatically on COM connection. After starting capture, send `LOG_START` followed by LF or CR+LF to start a new log session and reissue the headers beginning with `#FW_VERSION`. Session time and session counters are reset, but already transmitted or queued old log data is not discarded; treat the last `#FW_VERSION` in the file as the start of the new session. Pending STATE, ANOMALY and OFFSET events are cleared when the new session starts, but boot-lifetime counters and audio operation are not reset. Earlier TRACE or USB event history may follow the headers. If the clock is already synchronized, the existing `#TIME_SYNC` is also reissued; otherwise a separate `TIME` command is required.
 
+## v2.7: Change-Detection Logic
+
+Starting in v2.7, CDC diagnostic logs employ **change-detection logic** to reduce logging volume while preserving diagnostic value. Log size is reduced by approximately **98.8% to 99.0%** (measured in hardware: 48.5 MB → 0.59 MB) while keeping sufficient diagnostic detail.
+
+### Periodic Sampling
+
+**Interval**: 100 ms (detection) + 1-second forced output
+
+Periodic logs are recorded only when one of these conditions is met:
+
+- Host rate (`HOST_RATE`) changes by ≥ 50 Hz
+- Feedback rate (`FEEDBACK_RATE`) changes by ≥ 50 Hz
+- Ring level (`RING_NOW`) changes by ≥ 200 stereo frames
+- Underflow counter (`UNDERFLOW_COUNT`) increments
+- USB state transitions
+
+Additionally, one row is forced out every 1 second to maintain minimum visibility.
+
+**Related constants:**
+- `CDC_LOG_FORCE_PERIOD_US`: 1,000,000 µs (1 second)
+- `CDC_SAMPLE_INTERVAL_US`: 100,000 µs (100 ms)
+
+### FAST Sampling
+
+**Interval**: 1 ms (detection) + 500 ms forced output
+
+FAST logs are recorded only when one of these conditions is met:
+
+- Ring level changes by ≥ 200 stereo frames
+- 500 ms since the last FAST output
+
+Measured output behavior: average interval ~248 ms, median ~63 ms (indicating ring-change detection is the primary trigger, contributing ~53% of rows). Forced outputs contribute ~47%.
+
+**Related constants:**
+- `CDC_FAST_FORCE_PERIOD_US`: 500,000 µs (500 ms)
+- `CDC_FAST_CHANGE_THRESHOLD_RING_FRAMES`: 200 stereo frames
+- `CDC_FAST_SAMPLE_INTERVAL_US`: 1,000 µs (1 ms)
+
 ### High-frequency logging and clock synchronization
+
+Continuing below...
 
 In CDC-enabled builds, a `FAST,UPTIME_US,UNIX_US,STATE,RING,FB_LEVEL_X10,FEEDBACK_Q16,FB_INTEG_MILLIHZ,USB_OUT_AGE_US,MISSED,DROPPED,FB_DIAG_MODE,FB_DIAG_AGE_US,FB_P_MILLIHZ,FB_HF_MILLIHZ,FB_CORR_PPM_X10,FB_LIMIT_PPM_X10,FB_OUT_SAT,FB_I_SAT` row is also attempted approximately every 1 ms; the interval is not guaranteed. `UPTIME_US` is the device uptime at sampling, and `UNIX_US` is the synchronized UTC Unix time in microseconds, or blank before synchronization. State values 0–5 mean IDLE, BUFFERING, STREAMING, OVERFLOW_FATAL, UNDERFLOW_FATAL, and SWITCHING, respectively. `RING` is in stereo frames, `FB_LEVEL_X10` is the filtered level times 10, and `FB_INTEG_MILLIHZ` is the integrator in millihertz. These values are not sampled atomically. `FEEDBACK_Q16` is 16.16 samples/ms; multiply by 1000/65536 for Hz. It is zero in IDLE and SWITCHING. `USB_OUT_AGE_US` is blank when unavailable.
 

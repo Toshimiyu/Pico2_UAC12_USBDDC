@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | [日本語](README.md)
 
-**Current version: v2.6**
+**Current version: v2.7**
 
 ## Description
 
@@ -43,7 +43,7 @@ Display features such as the 11-band FFT analyzer, real-time level meters, and b
 
 ## Supported Environments
 
-- Windows 11 (tested on 26H2 with UAC2; with WASAPI, match the source and Windows sample rates)
+- **Windows 11** (tested on 26H2 with UAC2; with WASAPI, match the source and Windows sample rates. From v2.7 onwards, no noise has been detected during UAC2 mode operation.)
 - Android (UAC1; Onkyo HF Player playback through the Android standard driver and operation with HF Player's USB driver have been verified on hardware)
 - Build environment: Raspberry Pi Pico SDK v2.3.1 and Toolchain 15_2_Rel1
 
@@ -81,9 +81,19 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 <details>
 <summary>Show version history</summary>
 
-### V2.5
+### V2.7
 
-- Changes the PCM-underrun fade-out from 64 frames to approximately 5 ms based on the sample rate
+- **Implement change-detection logic in CDC diagnostic logs**
+  - Periodic log (100 ms): Record only when host rate, feedback rate, ring level, underflow, or USB state changes; omit log rows when no change is detected
+  - FAST log (1 ms): Record only when ring level changes > 200 frames. Force output every 500 ms to maintain minimum visibility
+  - Result: Achieve approximately **98.8% to 99.0% reduction** in log size (from 48.5 MB to 0.59 MB in hardware testing)
+- Improve CDC diagnostic CSV format and clarify the cumulative periods of `RATE_CHANGE_COUNT` (rate-switch count during the CDC session) and `UNDERFLOW_COUNT` (cumulative since boot)
+- Add documentation [CDC_CHANGE_DETECTION.md](docs/CDC_CHANGE_DETECTION.md) and [LOG_ANALYSIS_REPORT_v2_CORRECTED.md](LOG_ANALYSIS_REPORT_v2_CORRECTED.md) detailing implementation and hardware test results
+- Long-duration log recording becomes practical in diagnostic builds (`USB_BRINGUP_LEVEL` ≥ 3), enabling diagnostics to continue while audio playback halts
+
+### V2.6
+
+- Improve build and automation infrastructure; add PowerShell scripts that auto-read `USB_BRINGUP_LEVEL` from CMakeCache.txt
 - Fades in over approximately 5 ms after at least 2 ms of zero PCM while the host continues sending; avoids overlapping the DMA fade-in
 - Records PCM click candidates for diagnostics without changing audio based on a candidate alone
 - Reduces the startup I²S zero-output period from 10 to 7 seconds
@@ -429,19 +439,10 @@ Display Device:
 
 - Pico Display Pack 2.0
 
-Frequency Bands:
-
-- 45Hz
-- 90Hz
-- 125Hz
-- 360Hz
-- 700Hz
-- 1.4kHz
-- 2.8kHz
-- 5.6kHz
-- 9.8kHz
-- 18kHz
-- 22kHz
+From left to right, the bands cover 45–88, 88–177, 177–354,
+354–707, 707–1414 Hz, and 1.414–2.828, 2.828–5.657,
+5.657–9.8, 9.8–13.9, 13.9–17.9, and 17.9–22 kHz.
+The screen labels are not exact band center frequencies.
 
 ### FFT Configuration
 
