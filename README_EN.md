@@ -91,8 +91,10 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 ### V2.7
 
-- Refactor the I²S DMA transmit path: move normal playback fade-in application and fade-out buffer preparation out of the DMA IRQ path to reduce its workload
-- Place dedicated fade-out buffers in the same SRAM bank as the DMA transmit buffers and prepare them per slot
+- Refactor the I²S DMA transmit path: move fade-in application to normal PCM blocks and fade-out buffer preparation to Core1. The DMA IRQ schedules prepared buffers, reducing calculations and zero-filling in the IRQ path
+- Prepare each PCM block before publishing it to the DMA queue. If DMA completion or stop-fade state changes during preparation, rebuild the unpublished block from the original PCM to avoid applying stale fade state
+- Place per-slot fade-out buffers in the same SRAM bank as the DMA transmit buffers. Reserve the slot while DMA is using it to prevent reuse during fade-out preparation, and use a separate zero buffer for ordinary silence output
+- When `USB_AUDIO_ENABLE_STOP_FADE` is enabled, stop-fade processing remains in a dedicated exceptional path inside the DMA IRQ
 - Hardware playback checks with Windows (ASIO4ALL/WASAPI) and Android's standard USB audio driver produced no audible noise. During the Android check, silence and UF/OF counters also remained at zero
 - Bump the firmware version to v2.7. The Diagnostics screen shows `v2.7` for normal builds, `v2.7T` for `USB_BRINGUP_LEVEL=3`, and `v2.7A` for Level 4
 - **Implement change-detection logic in CDC diagnostic logs**
