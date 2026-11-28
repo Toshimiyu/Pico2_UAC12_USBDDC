@@ -91,6 +91,10 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 ### V2.7
 
+- Refactor the I²S DMA transmit path: move normal playback fade-in application and fade-out buffer preparation out of the DMA IRQ path to reduce its workload
+- Place dedicated fade-out buffers in the same SRAM bank as the DMA transmit buffers and prepare them per slot
+- Hardware playback checks with Windows (ASIO4ALL/WASAPI) and Android's standard USB audio driver produced no audible noise. During the Android check, silence and UF/OF counters also remained at zero
+- Bump the firmware version to v2.7. The Diagnostics screen shows `v2.7` for normal builds, `v2.7T` for `USB_BRINGUP_LEVEL=3`, and `v2.7A` for Level 4
 - **Implement change-detection logic in CDC diagnostic logs**
   - Periodic log (100 ms): Record only when host rate, feedback rate, ring level, underflow, or USB state changes; omit log rows when no change is detected
   - FAST log (1 ms): Record only when ring level changes > 200 frames. Force output every 500 ms to maintain minimum visibility
@@ -321,7 +325,7 @@ Pico2 + Pico Audio Pack (PCM5100A) + Pico Display Pack 2.0
 
 ## Display and Diagnostics
 
-In normal builds, use X to cycle through Boot, Playback, Diagnostics, and Feedback Monitor. CDC diagnostic builds (`USB_BRINGUP_LEVEL=3`) disable FFT display and processing, switch from Boot to Diagnostics after startup, and use X to cycle through Diagnostics, Feedback Monitor, and Playback Start Log. Level 4 keeps CDC diagnostics and FFT enabled; X cycles through Diagnostics, Feedback Monitor, Playback Start Log, and Playback (FFT display). The Diagnostics screen's Version field identifies the build: Level 3 shows `v2.6T`, while Level 4 shows `v2.6A`, so photos can distinguish them. On the Diagnostics screen, A/B navigate USB event history, A+B toggles audio-state history, and holding Y for 3 seconds resets diagnostic values and USB event history. For screen details, event symbols, and anomaly codes, see the [diagnostic event reference](docs/DIAGNOSTICS_EN.md).
+In normal builds, use X to cycle through Boot, Playback, Diagnostics, and Feedback Monitor. CDC diagnostic builds (`USB_BRINGUP_LEVEL=3`) disable FFT display and processing, switch from Boot to Diagnostics after startup, and use X to cycle through Diagnostics, Feedback Monitor, and Playback Start Log. Level 4 keeps CDC diagnostics and FFT enabled; X cycles through Diagnostics, Feedback Monitor, Playback Start Log, and Playback (FFT display). The Diagnostics screen's Version field identifies the build: normal builds show `v2.7`, Level 3 shows `v2.7T`, and Level 4 shows `v2.7A`, so photos can distinguish them. On the Diagnostics screen, A/B navigate USB event history, A+B toggles audio-state history, and holding Y for 3 seconds resets diagnostic values and USB event history. For screen details, event symbols, and anomaly codes, see the [diagnostic event reference](docs/DIAGNOSTICS_EN.md).
 
 ## Supported Operating Systems
 
