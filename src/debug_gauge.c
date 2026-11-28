@@ -57,22 +57,24 @@
 #define G_IN_H (G_FRAME_H - 2)
 
 #define G_PCT_X   48
-#define G_CURRENT_X 180
+#define G_CURRENT_X 68
 #define G_SIZE_X  160
-#define G_MIN_X G_UAC_X
+#define G_MIN_X 8
 #define G_PKT_X   248
+#define G_MAX_X   128
+#define G_MINMAX_Y (G_TEXT_Y + 12)
 #define G_STATE_X 56
 
 #define G_DIAG_COL0_X 180
 #define G_DIAG_COL1_X 248
 #define G_DIAG_ROW0_Y 42
-#define G_DIAG_ROW_STEP 12
+#define G_DIAG_ROW_STEP 10
 #define G_DIAG_FIELDS 12
 #define G_DIAG_CHARS 5
 
 #define G_LOG_X 12
-#define G_LOG_Y 120
-#define G_LOG_ROWS 8
+#define G_LOG_Y 132
+#define G_LOG_ROWS 7
 #define G_LOG_COLS 3
 #define G_LOG_ROW_STEP 12
 #define G_LOG_CHARS 12
@@ -430,8 +432,8 @@ static void queue_text_at(uint16_t x, uint16_t y, const char *s, int len, uint16
 
 static void draw_log_header(void)
 {
-	q_rect(8, 108, 168, 10, C_BG);
-	queue_text_at(8, 108, history_mode ? "RECENT AUDIO HISTORY" : "USB COMMUNICATION LOG",
+	q_rect(8, 120, 168, 10, C_BG);
+	queue_text_at(8, 120, history_mode ? "RECENT AUDIO HISTORY" : "USB COMMUNICATION LOG",
 				  history_mode ? 20 : 21, C_LABEL);
 }
 
@@ -536,8 +538,8 @@ void debug_gauge_init(void)
 	queue_text_at(8, G_FB_Y, "FB", 2, C_LABEL);
 	queue_text_at(8, G_FRAME_Y + 2, "RING", 4, C_LABEL);
 	queue_text_at(8, G_TEXT_Y, "LEVEL", 5, C_LABEL);
-	q_rect(8, 102, 304, 1, C_FRAME);
-	queue_text_at(8, 108, "USB COMMUNICATION LOG", 21, C_LABEL);
+	q_rect(8, 114, 304, 1, C_FRAME);
+	queue_text_at(8, 120, "USB COMMUNICATION LOG", 21, C_LABEL);
 	q_rect(8, 214, 304, 1, C_FRAME);
 	queue_text_at(12, 224, "A+B VIEW A:OLD B:NEW X:NEXT Y-3S:RESET", 38, C_LABEL);
 
@@ -777,10 +779,10 @@ static void refresh(float level, usb_audio_state_t st)
 
 	char host_text[8];
 	char fb_text[8];
-	snprintf(host_text, sizeof(host_text), "H%06lu", (unsigned long)usb_audio_get_host_rate_hz());
-	snprintf(fb_text, sizeof(fb_text), "F%06lu", (unsigned long)usb_audio_get_feedback_hz());
+	snprintf(host_text, sizeof(host_text), "%06lu", (unsigned long)usb_audio_get_host_rate_hz());
+	snprintf(fb_text, sizeof(fb_text), "%06lu", (unsigned long)usb_audio_get_feedback_hz());
 
-	for (int i = 0; i < 7; i++)
+	for (int i = 0; i < 6; i++)
 	{
 		if (host_text[i] != shown_host[i])
 		{
@@ -865,7 +867,7 @@ static void refresh(float level, usb_audio_state_t st)
         for (int i = 0; i < 5; i++)
         {
             if (current_text[i] != shown_current[i] &&
-                q_char(G_CURRENT_X + 8 * i, G_TEXT_Y, current_text[i], C_LABEL))
+                q_char(G_CURRENT_X + 8 * i, G_MINMAX_Y, current_text[i], C_LABEL))
                 shown_current[i] = current_text[i];
         }
 
@@ -896,7 +898,7 @@ static void refresh(float level, usb_audio_state_t st)
         {
             q_char(
                 (GAUGE_SHOW_MINMAX ? G_MIN_X : G_SIZE_X) + 8 * i,
-                G_TEXT_Y,
+                (GAUGE_SHOW_MINMAX ? G_MINMAX_Y : G_TEXT_Y),
                 size_text[i],
                 C_LABEL);
 
@@ -909,8 +911,8 @@ static void refresh(float level, usb_audio_state_t st)
         if (pkt_text[i] != shown_pkt[i])
         {
             q_char(
-                G_PKT_X + 8 * i,
-                G_TEXT_Y,
+                (GAUGE_SHOW_MINMAX ? G_MAX_X : G_PKT_X) + 8 * i,
+                (GAUGE_SHOW_MINMAX ? G_MINMAX_Y : G_TEXT_Y),
                 pkt_text[i],
                 C_LABEL);
 
@@ -960,8 +962,8 @@ static void refresh(float level, usb_audio_state_t st)
                 snprintf(text, sizeof(text), "%c%03lu", fields[field].label, (unsigned long)value);
             else
                 snprintf(text, sizeof(text), "%c%02lu", fields[field].label, (unsigned long)value);
-            const uint16_t x = field < 10 ? col_x[field % 2] : (uint16_t)(8 + 68 * (field - 10));
-            const uint16_t y = field >= 10 ? 96 : (field >= 8 ? 108 : G_DIAG_ROW0_Y + G_DIAG_ROW_STEP * (field / 2));
+            const uint16_t x = col_x[field % 2];
+            const uint16_t y = field >= 10 ? 82 : (field >= 8 ? 92 : G_DIAG_ROW0_Y + G_DIAG_ROW_STEP * (field / 2));
 
             for (int i = 0; i < G_DIAG_CHARS; i++)
             {

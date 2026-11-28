@@ -55,6 +55,14 @@ The PID allocation for the current USB identifier `0x2e8a:0xfede` is unconfirmed
 
 Use UAC1 mode on Android. Noise during playback through the standard driver is under investigation. UAC2 mode is intended for Windows. See [Supported Operating Systems](#supported-operating-systems) for details.
 
+## DMA IRQ Shortening Measurement Status
+
+For normal playback, fade-in and fade-out generation has moved from the DMA completion IRQ into Core1 PCM preparation. Silence uses a dedicated zero buffer. Fade-out candidates are prepared for each PCM block, and their slots are reserved until the DMA transfer completes. CDC diagnostics and measurement features are retained.
+
+The Level 3 (`USB_BRINGUP_LEVEL=3`) UAC2 measurement build completed successfully. The optional stream-close stop fade (`USB_AUDIO_ENABLE_STOP_FADE=ON`) remains in the IRQ to preserve its existing behavior; measure normal playback and stream-close behavior separately.
+
+UAC2 disassembly in the Pure Audio project reduced `dma_tx_schedule()` from 644 bytes / 212 instructions to 296 bytes / 88 instructions. UDIV / SMULL / UMULL counts fell from 2 / 4 / 2 to zero. This is a static comparison, not a runtime cycle or jitter measurement. Hardware checks passed for the 7-second startup silence, sample-rate switching, WASAPI exclusive playback, and shared playback.
+
 ---
 
 ## Design Goals
@@ -116,7 +124,7 @@ USB mute and unmute apply an approximately 5 ms linear gain ramp to incoming PCM
 
 - Use dedicated system clocks of 330 MHz (`D330`) at 44.1/88.2 kHz and 307.2 MHz (`D307`) at 176.4 kHz to reduce average sample-rate error from PIO divider quantization (about 6.25 to 0.91 ppm at 44.1/88.2 kHz and 125 to 1.95 ppm at 176.4 kHz). The I²S output clock is shared across USB input bit depths. Jitter reduction has not yet been measured on hardware.
 - Measure host send rate independently of diagnostic display and CDC connection, so feedback measurement does not depend on diagnostic enablement.
-- Detect and recover from DMA AHB errors instead of treating them as normal completions, and stop PIO before changing clocks during rate switches. Hardware validation of recovery and switching remains necessary.
+- Detect and recover from DMA AHB errors instead of treating them as normal completions, and stop PIO before changing clocks during rate switches. Hardware validation of DMA AHB recovery remains necessary; sample-rate switching passed the latest hardware checks.
 - Stop startup if ring-buffer allocation fails, synchronize shared ring-state reads and clearing, and correct UAC1 feedback `bRefresh` and inverted I²S PIO configuration.
 - Add a Feedback Monitor screen. An optional diagnostic build records the first 1024 audio OUT completions in RAM for on-screen inspection while Android remains connected. See the [Android test procedure](docs/ANDROID_TEST_EN.md).
 - Update firmware labels to `v2.3` for normal builds and `v2.3T` for CDC diagnostic builds. USB `bcdDevice` remains `0x0303` for UAC1 and `0x0313` for UAC2.

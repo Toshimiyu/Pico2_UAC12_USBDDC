@@ -10,6 +10,7 @@
 #include "common.h"
 #include "debug_gauge.h"
 #include "display_rta.h"
+#include "host_rate_window.h"
 #include "spectrum.h"
 #include "transmit_to_dac.h"
 #include "usb_audio_config.h"
@@ -24,6 +25,7 @@
 #define CDC_LOG_CHANGE_THRESHOLD_HOST_HZ 50u
 #define CDC_LOG_CHANGE_THRESHOLD_FB_HZ 50u
 #define CDC_LOG_CHANGE_THRESHOLD_RING_FRAMES 200u
+#define CDC_HF_DIFF_STREAM_WARMUP_US 1000000u
 #define CDC_FAST_CHANGE_THRESHOLD_RING_FRAMES 200u
 #define CDC_EVENT_QUEUE_SIZE 16u
 #define CDC_TRACE_QUEUE_SIZE 128u
@@ -105,9 +107,6 @@ static uint32_t fast_missed;
 static uint32_t fast_dropped;
 static uint32_t next_fast_force_us;
 static int32_t  last_fast_ring_level;
-static uint32_t last_fast_feedback;
-static uint32_t last_fast_integral;
-static uint32_t last_fast_out_age;
 static uint32_t fast_ring_change_sum;
 static uint32_t fast_ring_change_count;
 static uint64_t clock_unix_us;
@@ -129,6 +128,8 @@ static uint32_t last_underflow_count;
 static usb_audio_state_t last_state;
 static int32_t ring_max;
 static uint32_t max_hf_diff_session;
+static uint32_t hf_diff_stream_start_us;
+static bool hf_diff_stream_active;
 static uint32_t session_switch_start;
 static uint32_t stream_start_count;
 static uint32_t stream_stop_count;
@@ -712,6 +713,8 @@ static bool start_session(void)
 	ring_min = INT32_MAX;
 	ring_max = 0;
 	max_hf_diff_session = 0;
+	hf_diff_stream_start_us = now;
+	hf_diff_stream_active = false;
 	const usb_audio_stats_t *stats = usb_audio_get_stats();
 	session_switch_start = stats->switch_count;
 	stream_start_count = usb_audio_get_state() == USB_AUDIO_STREAMING ? 1u : 0u;
@@ -746,7 +749,10 @@ static void sample_ring_level(uint32_t now)
 
 	const uint32_t host_rate = usb_audio_get_host_rate_hz();
 	const uint32_t feedback_rate = usb_audio_get_feedback_hz();
-	if (host_rate != 0u && feedback_rate != 0u)
+	if (usb_audio_get_state() == USB_AUDIO_STREAMING && hf_diff_stream_active &&
+		(uint32_t)(now - hf_diff_stream_start_us) >=
+			CDC_HF_DIFF_STREAM_WARMUP_US + HOST_RATE_UPDATE_US &&
+		host_rate != 0u && feedback_rate != 0u)
 	{
 		const uint32_t difference = host_rate > feedback_rate
 			? host_rate - feedback_rate
@@ -1181,6 +1187,16 @@ void cdc_diagnostics_log_state_change(usb_audio_state_t previous_state,
 	const uint32_t dma_pool_frames = dma_tx_pool_frames();
 	if (!session_active)
 		return;
+	if (state == USB_AUDIO_STREAMING &&
+		(previous_state != USB_AUDIO_STREAMING || session_start))
+	{
+		hf_diff_stream_start_us = timestamp_us;
+		hf_diff_stream_active = true;
+	}
+	else if (state != USB_AUDIO_STREAMING)
+	{
+		hf_diff_stream_active = false;
+	}
 	const uint32_t owner = spin_lock_blocking(event_lock);
 	if (!session_start)
 	{

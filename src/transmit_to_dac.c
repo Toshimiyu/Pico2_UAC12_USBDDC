@@ -63,8 +63,11 @@ static uint offset;
 
 static uint32_t __attribute__((section(".dma_sram_bank7")))
     dma_tx_buffers[DEPTH_DMA_TX_BUFFER][SIZE_DMA_TX_BUF];
+static uint32_t __attribute__((section(".dma_sram_bank7")))
+    dma_fadeout_buffers[DEPTH_DMA_TX_BUFFER]
+        [(DMA_EMPTY_FADE_MAX_FRAMES + DMA_SILENCE_FRAMES) * 2u];
 
-_Static_assert(sizeof(dma_tx_buffers) <= DMA_TX_SRAM_BANK_BYTES,
+_Static_assert(sizeof(dma_tx_buffers) + sizeof(dma_fadeout_buffers) <= DMA_TX_SRAM_BANK_BYTES,
                "DMA buffers exceed SRAM bank 7");
 
 static int dma_ch;
@@ -85,16 +88,25 @@ static volatile uint32_t dma_restart_since_us;
 static idle_clock_timer_t dma_idle_timer;
 static bool dma_idle_silence_started;
 static uint32_t dma_idle_silence_since_us;
-static uint32_t dma_silence[DMA_EMPTY_FADE_MAX_FRAMES * 2u];
+static uint32_t dma_zero[DMA_SILENCE_FRAMES * 2u];
+static uint32_t dma_fadeout_words[DEPTH_DMA_TX_BUFFER];
 static volatile bool dma_was_silence = true;
 static volatile bool dma_fade_out_in_flight;
+static volatile bool dma_fade_slot_reserved;
+static volatile uint32_t dma_fade_slot;
+static volatile uint32_t dma_running_slot;
+static volatile uint32_t dma_fade_epoch;
 static uint32_t dma_fade_in_total;
 static uint32_t dma_fade_in_remaining;
+#if USB_AUDIO_ENABLE_STOP_FADE
 static volatile int32_t dma_last_pcm_left;
 static volatile int32_t dma_last_pcm_right;
+#endif
+static int32_t dma_tx_prepare_backup[SIZE_DMA_TX_BUF];
 #if USB_AUDIO_ENABLE_STOP_FADE
 static atomic_bool dma_stop_fade_requested;
 static bool dma_stop_fade_active;
+static bool dma_schedule_refade_once;
 static mute_ramp_t dma_stop_fade;
 
 void dma_tx_request_stop_fade(void)
@@ -104,8 +116,17 @@ void dma_tx_request_stop_fade(void)
 #endif
 DMA_TX_STRUCTURE dma_tx;
 
+typedef struct
+{
+    bool was_silence;
+    bool skip_fade_in;
+    uint32_t total;
+    uint32_t remaining;
+} dma_fade_in_state_t;
+
 static void dma_tx_reset(void)
 {
+    dma_fade_epoch++;
     dma_tx.wp = 0;
     dma_tx.rp = 0;
     dma_tx.using = 0;
@@ -115,16 +136,22 @@ static void dma_tx_reset(void)
         dma_tx.data[i].tx_buf = dma_tx_buffers[i];
         dma_tx.data[i].tx_size = 0;
     }
-    memset(dma_silence, 0, sizeof(dma_silence));
+    memset(dma_fadeout_words, 0, sizeof(dma_fadeout_words));
     dma_was_silence = true;
     dma_fade_out_in_flight = false;
+    dma_fade_slot_reserved = false;
+    dma_fade_slot = 0u;
+    dma_running_slot = 0u;
     dma_fade_in_total = 0;
     dma_fade_in_remaining = 0;
+#if USB_AUDIO_ENABLE_STOP_FADE
     dma_last_pcm_left = 0;
     dma_last_pcm_right = 0;
+#endif
 #if USB_AUDIO_ENABLE_STOP_FADE
     atomic_store_explicit(&dma_stop_fade_requested, false, memory_order_relaxed);
     dma_stop_fade_active = false;
+    dma_schedule_refade_once = false;
 #endif
 }
 
@@ -246,7 +273,90 @@ bool dma_tx_restart_wait_since(uint32_t *since_us)
 bool dma_tx_is_silent(void)
 {
     return dma_was_silence && !dma_fade_out_in_flight &&
-        !dma_running_pcm && dma_tx.using == 0;
+        !dma_fade_slot_reserved && !dma_running_pcm && dma_tx.using == 0;
+}
+
+static void __not_in_flash_func(dma_capture_fade_in_state)(dma_fade_in_state_t *fade)
+{
+    fade->was_silence = dma_was_silence;
+    fade->skip_fade_in = false;
+    fade->total = dma_fade_in_total;
+    fade->remaining = dma_fade_in_remaining;
+#if USB_AUDIO_ENABLE_STOP_FADE
+    fade->skip_fade_in = dma_stop_fade_active;
+#endif
+    if (fade->was_silence
+#if USB_AUDIO_ENABLE_STOP_FADE
+        && !fade->skip_fade_in
+#endif
+        )
+    {
+        fade->total = (audio_state.freq * DMA_START_FADE_MS + 999u) / 1000u;
+        if (fade->total == 0u)
+            fade->total = 1u;
+        fade->remaining = fade->total;
+    }
+}
+
+static void __not_in_flash_func(dma_update_stop_fade_state)(void)
+{
+#if USB_AUDIO_ENABLE_STOP_FADE
+    if (atomic_exchange_explicit(&dma_stop_fade_requested, false, memory_order_acq_rel))
+    {
+        stop_fade_reset(&dma_stop_fade, audio_state.freq);
+        dma_stop_fade_active = true;
+        dma_fade_in_remaining = 0u;
+        dma_fade_epoch++;
+    }
+    if (dma_stop_fade_active && usb_audio_get_state() == USB_AUDIO_STREAMING)
+    {
+        dma_stop_fade_active = false;
+        dma_was_silence = true;
+        dma_schedule_refade_once = true;
+        dma_fade_epoch++;
+    }
+#endif
+}
+
+static void __not_in_flash_func(dma_apply_fade_in)(int32_t *samples, uint32_t words,
+                                                    dma_fade_in_state_t *fade)
+{
+    const uint32_t frames = words / 2u;
+    if (fade->was_silence && !fade->skip_fade_in)
+        fade->was_silence = false;
+    for (uint32_t frame = 0; frame < frames && fade->remaining != 0u; frame++)
+    {
+        const uint32_t numerator = fade->total - fade->remaining + 1u;
+        const uint32_t gain = audio_fade_gain_q16(numerator, fade->total);
+        samples[2u * frame] = audio_fade_apply_q16(samples[2u * frame], gain);
+        samples[2u * frame + 1u] = audio_fade_apply_q16(samples[2u * frame + 1u], gain);
+        fade->remaining--;
+    }
+}
+
+static void __not_in_flash_func(dma_prepare_fade_out)(uint32_t slot,
+                                                       const int32_t *samples,
+                                                       uint32_t words)
+{
+    uint32_t fade_frames = (audio_state.freq * DMA_EMPTY_FADE_MS + 999u) / 1000u;
+    if (fade_frames == 0u)
+        fade_frames = 1u;
+    if (fade_frames > DMA_EMPTY_FADE_MAX_FRAMES)
+        fade_frames = DMA_EMPTY_FADE_MAX_FRAMES;
+
+    const int32_t left = samples[words - 2u];
+    const int32_t right = samples[words - 1u];
+    uint32_t *fade = dma_fadeout_buffers[slot];
+    for (uint32_t frame = 0; frame < fade_frames; frame++)
+    {
+        const uint32_t numerator = fade_frames - frame - 1u;
+        const uint32_t gain = audio_fade_gain_q16(numerator, fade_frames);
+        fade[2u * frame] = (uint32_t)audio_fade_apply_q16(left, gain);
+        fade[2u * frame + 1u] = (uint32_t)audio_fade_apply_q16(right, gain);
+    }
+    memset(&fade[fade_frames * 2u], 0,
+           DMA_SILENCE_FRAMES * 2u * sizeof(fade[0]));
+    dma_fadeout_words[slot] = (fade_frames + DMA_SILENCE_FRAMES) * 2u;
 }
 
 static void __not_in_flash_func(dma_tx_check_pio_stall)(uint32_t now_us)
@@ -269,25 +379,13 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
     if (dma_running || atomic_load_explicit(&dma_ahb_fault, memory_order_acquire) != 0u)
         return;
 
-#if USB_AUDIO_ENABLE_STOP_FADE
-    if (atomic_exchange_explicit(&dma_stop_fade_requested, false, memory_order_acq_rel))
-    {
-        stop_fade_reset(&dma_stop_fade, audio_state.freq);
-        dma_stop_fade_active = true;
-        dma_fade_in_remaining = 0;
-    }
-    if (dma_stop_fade_active && usb_audio_get_state() == USB_AUDIO_STREAMING)
-    {
-        dma_stop_fade_active = false;
-        dma_was_silence = true;
-    }
-#endif
+    dma_update_stop_fade_state();
 
     uint32_t *buffer;
     uint32_t words;
     if (dma_tx_startup_silence_active() || dma_restart_in_progress)
     {
-        buffer = dma_silence;
+        buffer = dma_zero;
         words = DMA_SILENCE_FRAMES * 2u;
         dma_running_pcm = false;
     }
@@ -301,69 +399,82 @@ static void __not_in_flash_func(dma_tx_schedule)(void)
         const uint32_t rp = dma_tx.rp;
         buffer = dma_tx.data[rp].tx_buf;
         words = dma_tx.data[rp].tx_size;
+        dma_running_slot = rp;
         dma_tx.rp = (rp + 1u) % DEPTH_DMA_TX_BUFFER;
         dma_running_pcm = true;
-
+#if USB_AUDIO_ENABLE_STOP_FADE
         int32_t *samples = (int32_t *)buffer;
         const uint32_t frames = words / 2u;
-        if (dma_was_silence
-#if USB_AUDIO_ENABLE_STOP_FADE
-            && !dma_stop_fade_active
-#endif
-            )
+        if (dma_schedule_refade_once)
         {
             dma_fade_in_total = (audio_state.freq * DMA_START_FADE_MS + 999u) / 1000u;
             if (dma_fade_in_total == 0u)
                 dma_fade_in_total = 1u;
             dma_fade_in_remaining = dma_fade_in_total;
+            for (uint32_t frame = 0; frame < frames && dma_fade_in_remaining != 0u; frame++)
+            {
+                const uint32_t numerator = dma_fade_in_total - dma_fade_in_remaining + 1u;
+                const uint32_t gain = audio_fade_gain_q16(numerator, dma_fade_in_total);
+                samples[2u * frame] = audio_fade_apply_q16(samples[2u * frame], gain);
+                samples[2u * frame + 1u] = audio_fade_apply_q16(samples[2u * frame + 1u], gain);
+                dma_fade_in_remaining--;
+            }
             dma_was_silence = false;
+            dma_prepare_fade_out(rp, samples, words);
+            dma_schedule_refade_once = false;
         }
-        for (uint32_t frame = 0; frame < frames && dma_fade_in_remaining != 0u; frame++)
-        {
-            const uint32_t numerator = dma_fade_in_total - dma_fade_in_remaining + 1u;
-            const uint32_t gain = audio_fade_gain_q16(numerator, dma_fade_in_total);
-            samples[2u * frame] = audio_fade_apply_q16(samples[2u * frame], gain);
-            samples[2u * frame + 1u] = audio_fade_apply_q16(samples[2u * frame + 1u], gain);
-            dma_fade_in_remaining--;
-        }
-#if USB_AUDIO_ENABLE_STOP_FADE
         if (dma_stop_fade_active)
             stop_fade_apply(&dma_stop_fade, samples, frames);
-#endif
         dma_last_pcm_left = samples[words - 2u];
         dma_last_pcm_right = samples[words - 1u];
+#endif
     }
     else
     {
-        buffer = dma_silence;
+        buffer = dma_zero;
         words = DMA_SILENCE_FRAMES * 2u;
         if (!dma_was_silence)
         {
-            uint32_t fade_frames =
-                (audio_state.freq * DMA_EMPTY_FADE_MS + 999u) / 1000u;
-            if (fade_frames == 0u)
-                fade_frames = 1u;
-            if (fade_frames > DMA_EMPTY_FADE_MAX_FRAMES)
-                fade_frames = DMA_EMPTY_FADE_MAX_FRAMES;
-            for (uint32_t frame = 0; frame < fade_frames; frame++)
+            if (dma_fade_slot_reserved)
             {
-                const uint32_t numerator = fade_frames - frame - 1u;
-                const uint32_t gain = audio_fade_gain_q16(numerator, fade_frames);
-                dma_silence[2u * frame] =
-                    (uint32_t)audio_fade_apply_q16(dma_last_pcm_left, gain);
-                dma_silence[2u * frame + 1u] =
-                    (uint32_t)audio_fade_apply_q16(dma_last_pcm_right, gain);
+                buffer = dma_fadeout_buffers[dma_fade_slot];
+#if USB_AUDIO_ENABLE_STOP_FADE
+                if (dma_stop_fade_active)
+                {
+                    uint32_t fade_frames =
+                        (audio_state.freq * DMA_EMPTY_FADE_MS + 999u) / 1000u;
+                    if (fade_frames == 0u)
+                        fade_frames = 1u;
+                    if (fade_frames > DMA_EMPTY_FADE_MAX_FRAMES)
+                        fade_frames = DMA_EMPTY_FADE_MAX_FRAMES;
+                    for (uint32_t frame = 0; frame < fade_frames; frame++)
+                    {
+                        const uint32_t numerator = fade_frames - frame - 1u;
+                        const uint32_t gain = audio_fade_gain_q16(numerator, fade_frames);
+                        dma_fadeout_buffers[dma_fade_slot][2u * frame] =
+                            (uint32_t)audio_fade_apply_q16(dma_last_pcm_left, gain);
+                        dma_fadeout_buffers[dma_fade_slot][2u * frame + 1u] =
+                            (uint32_t)audio_fade_apply_q16(dma_last_pcm_right, gain);
+                    }
+                    words = (fade_frames + DMA_SILENCE_FRAMES) * 2u;
+                    memset(&dma_fadeout_buffers[dma_fade_slot][fade_frames * 2u], 0,
+                           DMA_SILENCE_FRAMES * 2u * sizeof(uint32_t));
+                }
+                else
+#endif
+                {
+                    words = dma_fadeout_words[dma_fade_slot];
+                }
             }
-            words = fade_frames * 2u;
-            dma_fade_out_in_flight = true;
-            dma_last_pcm_left = 0;
-            dma_last_pcm_right = 0;
+            if (buffer != dma_zero)
+                dma_fade_out_in_flight = true;
             dma_was_silence = true;
             dma_fade_in_remaining = 0;
-        }
-        else
-        {
-            memset(dma_silence, 0, DMA_SILENCE_FRAMES * 2u * sizeof(dma_silence[0]));
+            dma_fade_epoch++;
+#if USB_AUDIO_ENABLE_STOP_FADE
+            dma_last_pcm_left = 0;
+            dma_last_pcm_right = 0;
+#endif
         }
 #if USB_CDC_ENABLED
         const usb_audio_state_t state = usb_audio_get_state();
@@ -393,9 +504,19 @@ static void __not_in_flash_func(dma_tx_irq_handler)(void)
     if (!dma_running)
         return;
     if (dma_running_pcm && dma_tx.using != 0)
+    {
         dma_tx.using--;
+        if (dma_tx.using == 0u)
+        {
+            dma_fade_slot = dma_running_slot;
+            dma_fade_slot_reserved = true;
+        }
+    }
     else if (dma_fade_out_in_flight)
+    {
         dma_fade_out_in_flight = false;
+        dma_fade_slot_reserved = false;
+    }
     if (dma_tx_startup_silence_active() && !dma_startup_clock_started)
     {
         pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
@@ -687,7 +808,7 @@ void __not_in_flash_func(dma_tx_start)(void)
 #if FB_EXPERIMENTAL_LEVEL_SEED
     bool queued_streaming_pcm = false;
 #endif
-    while (dma_tx.using < SIZE_DMA_TX_BUF_STACK)
+    while (dma_tx.using + (dma_fade_slot_reserved ? 1u : 0u) < SIZE_DMA_TX_BUF_STACK)
     {
         const usb_audio_state_t fetch_state = usb_audio_get_state();
         if (fetch_state == USB_AUDIO_BUFFERING || fetch_state == USB_AUDIO_UNDERFLOW_FATAL)
@@ -700,7 +821,7 @@ void __not_in_flash_func(dma_tx_start)(void)
         if (frames > DMA_MAX_FRAMES)
             frames = DMA_MAX_FRAMES;
 
-        const uint32_t wp = dma_tx.wp;
+        uint32_t wp = dma_tx.wp;
         uint32_t *tx = dma_tx.data[wp].tx_buf;
         if (ringbuf_read_array_spinlock((int32_t *)tx, (uint32_t)frames * 2u, &buffer_audio) < 0)
             break;
@@ -715,11 +836,44 @@ void __not_in_flash_func(dma_tx_start)(void)
                 dma_diag.level_min = level_after;
         }
 
-        const uint32_t irq_state = save_and_disable_interrupts();
-        dma_tx.data[wp].tx_size = (uint32_t)frames * 2u;
-        dma_tx.wp = (wp + 1u) % DEPTH_DMA_TX_BUFFER;
-        dma_tx.using++;
+        const uint32_t words = (uint32_t)frames * 2u;
+        uint32_t irq_state = save_and_disable_interrupts();
+        dma_update_stop_fade_state();
+        uint32_t fade_epoch = dma_fade_epoch;
+        dma_fade_in_state_t fade_state;
+        dma_capture_fade_in_state(&fade_state);
         restore_interrupts(irq_state);
+
+        memcpy(dma_tx_prepare_backup, tx, words * sizeof(tx[0]));
+        for (;;)
+        {
+            memcpy(tx, dma_tx_prepare_backup, words * sizeof(tx[0]));
+            dma_apply_fade_in((int32_t *)tx, words, &fade_state);
+            dma_prepare_fade_out(wp, (const int32_t *)tx, words);
+
+            const uint32_t publish_irq_state = save_and_disable_interrupts();
+            dma_update_stop_fade_state();
+            if (fade_epoch == dma_fade_epoch)
+            {
+                dma_was_silence = fade_state.was_silence;
+                dma_fade_in_total = fade_state.total;
+                dma_fade_in_remaining = fade_state.remaining;
+                dma_tx.data[wp].tx_size = words;
+                dma_tx.wp = (wp + 1u) % DEPTH_DMA_TX_BUFFER;
+                dma_tx.using++;
+                restore_interrupts(publish_irq_state);
+                break;
+            }
+
+            // A DMA completion or stop-fade transition changed the fade state
+            // during preparation. Rebuild this unpublished block from raw PCM.
+            fade_epoch = dma_fade_epoch;
+            dma_capture_fade_in_state(&fade_state);
+            const uint32_t retry_wp = dma_tx.wp;
+            tx = dma_tx.data[retry_wp].tx_buf;
+            restore_interrupts(publish_irq_state);
+            wp = retry_wp;
+        }
 #if FB_EXPERIMENTAL_LEVEL_SEED
         if (fetch_state == USB_AUDIO_STREAMING)
             queued_streaming_pcm = true;
@@ -785,6 +939,7 @@ void dma_stop_and_clear(void)
 
 uint32_t dma_tx_discard_pending(void)
 {
+    dma_fade_epoch++;
     uint32_t discarded_frames = 0;
     const uint32_t using = dma_tx.using;
     const uint32_t preserve = (dma_running && dma_running_pcm && using != 0u) ? 1u : 0u;
